@@ -2,6 +2,11 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { Server as SocketIOServer } from 'socket.io';
 import {
+  ControllerJoinPayloadSchema,
+  ControllerPressColorPayloadSchema,
+  ControllerPressRedPayloadSchema,
+  HostCreateRoomPayloadSchema,
+  HostReadyForTimerPayloadSchema,
   ScoringMath,
   type BuzzerColor,
   type ControllerToServerEvents,
@@ -14,6 +19,7 @@ import { RoomManager } from './state/room-machine.js';
 
 const PORT = Number(process.env.PORT ?? 3456);
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? 'http://localhost:5173';
+const ALLOWED_ORIGINS = WEB_ORIGIN.split(',').map((origin) => origin.trim());
 
 interface DemoQuestion {
   id: string;
@@ -33,7 +39,8 @@ const DEMO_QUESTIONS: DemoQuestion[] = [
     prompt: 'Sur quelle console est sorti Buzz! Quiz World en 2009 ?',
     choices: ['PlayStation 3', 'Nintendo 64', 'Sega Dreamcast', 'Atari 2600'],
     correctIndex: 0,
-    presenterIntro: 'Première question ! Voyons qui a un minimum de culture générale dans ce salon...',
+    presenterIntro:
+      'Première question ! Voyons qui a un minimum de culture générale dans ce salon...',
   },
   {
     id: 'q-demo-2',
@@ -42,7 +49,8 @@ const DEMO_QUESTIONS: DemoQuestion[] = [
     prompt: 'Quelle couleur se trouve tout en haut des 4 boutons de réponse sur votre Buzzer ?',
     choices: ['Le Bleu', 'Le Vert', 'Le Jaune', 'Le Violet'],
     correctIndex: 0,
-    presenterIntro: 'Ne regardez pas votre téléphone pour tricher... ah bah si, vous avez le droit !',
+    presenterIntro:
+      'Ne regardez pas votre téléphone pour tricher... ah bah si, vous avez le droit !',
   },
   {
     id: 'q-demo-3',
@@ -57,11 +65,9 @@ const DEMO_QUESTIONS: DemoQuestion[] = [
 
 async function bootstrap() {
   const app = Fastify({ logger: true });
-  await app.register(cors, { origin: true });
+  await app.register(cors, { origin: ALLOWED_ORIGINS });
 
   const roomManager = new RoomManager();
-  const roomQuestionIndex = new Map<string, number>();
-  const roomAnswers = new Map<string, Map<number, { color: BuzzerColor; reactionSec: number }>>();
 
   app.get('/health', async () => ({ status: 'ok', service: 'buzz-web-world-server' }));
 
@@ -71,14 +77,14 @@ async function bootstrap() {
     ControllerToServerEvents & HostToServerEvents,
     ServerToControllerEvents & ServerToHostEvents
   >(app.server, {
-    cors: { origin: '*' },
+    cors: { origin: ALLOWED_ORIGINS },
   });
 
   function syncAllControllers(roomCode: string) {
     const room = roomManager.getRoom(roomCode);
     if (!room) return;
     for (const [slotIndex, player] of room.players.entries()) {
-      if (player.socketId) {
+      if (player.socketId && player.isConnected) {
         io.to(player.socketId).emit(
           'controller:state_sync',
           roomManager.computeControllerSyncState(room, slotIndex)
@@ -104,10 +110,11 @@ async function bootstrap() {
   function launchQuestion(roomCode: string, qIdx: number) {
     const room = roomManager.getRoom(roomCode);
     if (!room) return;
-    const q = DEMO_QUESTIONS[qIdx % DEMO_QUESTIONS.length]!;
+    const q = DEMO_QUESTIONS[qIdx % DEMO_QUESTIONS.length];
+    if (!q) return;
 
-    roomQuestionIndex.set(roomCode, qIdx);
-    roomAnswers.set(roomCode, new Map());
+    room.currentQuestionIndex = qIdx;
+    room.answers.clear();
     room.phase = 'QUESTION_ACTIVE';
     room.currentRoundIndex = 1;
     room.currentRoundType = qIdx >= 2 ? 'FASTEST_FINGER' : 'POINT_BUILDER';
@@ -146,11 +153,14 @@ async function bootstrap() {
   function revealQuestion(roomCode: string) {
     const room = roomManager.getRoom(roomCode);
     if (!room || room.phase !== 'QUESTION_ACTIVE') return;
-    if (room.activeWatchdogTimer) clearTimeout(room.activeWatchdogTimer);
+    if (room.activeWatchdogTimer) {
+      clearTimeout(room.activeWatchdogTimer);
+      room.activeWatchdogTimer = undefined;
+    }
 
-    const qIdx = roomQuestionIndex.get(roomCode) ?? 0;
-    const q = DEMO_QUESTIONS[qIdx % DEMO_QUESTIONS.length]!;
-    const answers = roomAnswers.get(roomCode) ?? new Map();
+    const qIdx = Math.max(0, room.currentQuestionIndex);
+    const q = DEMO_QUESTIONS[qIdx % DEMO_QUESTIONS.length];
+    if (!q) return;
 
     room.phase = 'QUESTION_REVEAL';
 
@@ -158,7 +168,7 @@ async function bootstrap() {
     const updatedScores: Record<number, number> = {};
 
     for (const [slotIndex, player] of room.players.entries()) {
-      const ans = answers.get(slotIndex);
+      const ans = room.answers.get(slotIndex);
       const isCorrect = ans?.color === q.correctIndex;
       const delta =
         room.currentRoundType === 'FASTEST_FINGER'
@@ -196,13 +206,23 @@ async function bootstrap() {
   }
 
   io.on('connection', (socket) => {
-    socket.on('host:create_room', (payload, ack) => {
-      const room = roomManager.createRoom(socket.id, payload.format, payload.customRoundsCount);
+    socket.on('host:create_room', (rawPayload, ack) => {
+      const parsed = HostCreateRoomPayloadSchema.safeParse(rawPayload);
+      if (!parsed.success || typeof ack !== 'function') {
+        app.log.warn({ err: parsed.error }, '[SEC-01] Rejected invalid host:create_room payload');
+        return;
+      }
+
+      const room = roomManager.createRoom(
+        socket.id,
+        parsed.data.format,
+        parsed.data.customRoundsCount
+      );
       socket.data.hostRoomCode = room.roomCode;
       socket.join(`room:${room.roomCode}:host`);
       ack({
         roomCode: room.roomCode,
-        joinUrl: `${WEB_ORIGIN}/controller?room=${room.roomCode}`,
+        joinUrl: `${ALLOWED_ORIGINS[0] ?? WEB_ORIGIN}/controller?room=${room.roomCode}`,
       });
       broadcastRoomState(room.roomCode);
     });
@@ -210,14 +230,42 @@ async function bootstrap() {
     socket.on('host:start_game', () => {
       const roomCode = socket.data.hostRoomCode as string | undefined;
       if (!roomCode) return;
-      const nextIdx = (roomQuestionIndex.get(roomCode) ?? -1) + 1;
+      const room = roomManager.getRoom(roomCode);
+      if (!room || room.hostSocketId !== socket.id) return;
+
+      const nextIdx = room.currentQuestionIndex + 1;
       launchQuestion(roomCode, nextIdx);
     });
 
-    socket.on('controller:join', (payload) => {
-      const joined = roomManager.joinOrReconnectPlayer(payload.roomCode, socket.id, payload);
+    socket.on('host:ready_for_timer', (rawPayload) => {
+      const parsed = HostReadyForTimerPayloadSchema.safeParse(rawPayload);
+      if (!parsed.success) {
+        app.log.warn(
+          { err: parsed.error },
+          '[SEC-01] Rejected invalid host:ready_for_timer payload'
+        );
+        return;
+      }
+      const roomCode = socket.data.hostRoomCode as string | undefined;
+      if (!roomCode) return;
+      const room = roomManager.getRoom(roomCode);
+      if (!room || room.hostSocketId !== socket.id) return;
+    });
+
+    socket.on('controller:join', (rawPayload) => {
+      const parsed = ControllerJoinPayloadSchema.safeParse(rawPayload);
+      if (!parsed.success) {
+        app.log.warn({ err: parsed.error }, '[SEC-01] Rejected invalid controller:join payload');
+        return;
+      }
+
+      const joined = roomManager.joinOrReconnectPlayer(
+        parsed.data.roomCode,
+        socket.id,
+        parsed.data
+      );
       if (!joined) return;
-      const room = roomManager.getRoom(payload.roomCode);
+      const room = roomManager.getRoom(parsed.data.roomCode);
       if (!room) return;
 
       socket.data.roomCode = room.roomCode;
@@ -228,7 +276,16 @@ async function bootstrap() {
       broadcastRoomState(room.roomCode);
     });
 
-    socket.on('controller:press_red', async () => {
+    socket.on('controller:press_red', async (rawPayload) => {
+      const parsed = ControllerPressRedPayloadSchema.safeParse(rawPayload);
+      if (!parsed.success) {
+        app.log.warn(
+          { err: parsed.error },
+          '[SEC-01] Rejected invalid controller:press_red payload'
+        );
+        return;
+      }
+
       const { roomCode, slotIndex } = socket.data as { roomCode?: string; slotIndex?: number };
       if (!roomCode || slotIndex === undefined) return;
       const room = roomManager.getRoom(roomCode);
@@ -251,18 +308,30 @@ async function bootstrap() {
       }
     });
 
-    socket.on('controller:press_color', ({ color }) => {
+    socket.on('controller:press_color', (rawPayload) => {
+      const parsed = ControllerPressColorPayloadSchema.safeParse(rawPayload);
+      if (!parsed.success) {
+        app.log.warn(
+          { err: parsed.error },
+          '[SEC-01] Rejected invalid controller:press_color payload'
+        );
+        return;
+      }
+      const { color } = parsed.data;
+
       const { roomCode, slotIndex } = socket.data as { roomCode?: string; slotIndex?: number };
       if (!roomCode || slotIndex === undefined) return;
       const room = roomManager.getRoom(roomCode);
       if (!room) return;
 
       if (room.phase === 'QUESTION_ACTIVE') {
-        const answers = roomAnswers.get(roomCode);
-        if (!answers || answers.has(slotIndex)) return; // Premier appui verrouillé !
+        if (room.answers.has(slotIndex)) return; // Premier appui verrouillé !
 
-        const reactionSec = Math.max(0, (Date.now() - (room.questionOpenedAtMs ?? Date.now())) / 1000);
-        answers.set(slotIndex, { color, reactionSec });
+        const reactionSec = Math.max(
+          0,
+          (Date.now() - (room.questionOpenedAtMs ?? Date.now())) / 1000
+        );
+        room.answers.set(slotIndex, { color, reactionSec });
 
         const player = room.players.get(slotIndex);
         if (player) {
@@ -285,7 +354,7 @@ async function bootstrap() {
         broadcastRoomState(room.roomCode);
 
         // Si tous les joueurs connectés ont répondu, on révèle immédiatement !
-        if (answers.size >= room.players.size && room.players.size > 0) {
+        if (roomManager.areAllConnectedPlayersAnswered(roomCode)) {
           revealQuestion(roomCode);
         }
       } else {
@@ -294,6 +363,35 @@ async function bootstrap() {
           slotIndex,
           riveState: ((color % 4) + 2) as 2 | 3 | 4 | 5,
         });
+      }
+    });
+
+    socket.on('disconnect', () => {
+      const { roomCode, slotIndex, hostRoomCode } = socket.data as {
+        roomCode?: string;
+        slotIndex?: number;
+        hostRoomCode?: string;
+      };
+
+      if (roomCode && slotIndex !== undefined) {
+        const updated = roomManager.markPlayerDisconnected(roomCode, slotIndex);
+        if (updated) {
+          broadcastRoomState(roomCode);
+          const room = roomManager.getRoom(roomCode);
+          if (
+            room?.phase === 'QUESTION_ACTIVE' &&
+            roomManager.areAllConnectedPlayersAnswered(roomCode)
+          ) {
+            revealQuestion(roomCode);
+          }
+        }
+      }
+
+      if (hostRoomCode) {
+        const room = roomManager.getRoom(hostRoomCode);
+        if (room && room.hostSocketId === socket.id) {
+          roomManager.destroyRoom(hostRoomCode);
+        }
       }
     });
   });

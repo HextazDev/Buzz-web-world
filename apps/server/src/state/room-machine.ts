@@ -16,7 +16,12 @@ export interface ActiveRoom {
   currentRoundIndex: number;
   totalRounds: number;
   currentRoundType?: RoundType;
-  players: Map<number, PlayerSlotState & { socketId?: string; reconnectToken: string; tauntCount: number }>;
+  currentQuestionIndex: number;
+  answers: Map<number, { color: BuzzerColor; reactionSec: number }>;
+  players: Map<
+    number,
+    PlayerSlotState & { socketId?: string; reconnectToken: string; tauntCount: number }
+  >;
   buzzLockedSlot: number | null;
   questionOpenedAtMs: number | null;
   activeWatchdogTimer?: NodeJS.Timeout;
@@ -27,7 +32,11 @@ export class RoomManager {
   // Verrou atomique mémoire en fallback si Redis n'est pas lancé en dev local
   private localLocks = new Map<string, { slotIndex: number; expiresAt: number }>();
 
-  createRoom(hostSocketId: string, format: 'SHORT' | 'NORMAL' | 'LONG' | 'CUSTOM', customRounds?: number): ActiveRoom {
+  createRoom(
+    hostSocketId: string,
+    format: 'SHORT' | 'NORMAL' | 'LONG' | 'CUSTOM',
+    customRounds?: number
+  ): ActiveRoom {
     const roomCode = this.generateRoomCode();
     const totalRounds =
       format === 'SHORT'
@@ -45,6 +54,8 @@ export class RoomManager {
       format,
       currentRoundIndex: 0,
       totalRounds,
+      currentQuestionIndex: -1,
+      answers: new Map(),
       players: new Map(),
       buzzLockedSlot: null,
       questionOpenedAtMs: null,
@@ -55,7 +66,8 @@ export class RoomManager {
   }
 
   getRoom(roomCode: string): ActiveRoom | undefined {
-    return this.rooms.get(roomCode.toUpperCase());
+    if (!roomCode || typeof roomCode !== 'string') return undefined;
+    return this.rooms.get(roomCode.trim().toUpperCase());
   }
 
   /**
@@ -64,7 +76,13 @@ export class RoomManager {
   joinOrReconnectPlayer(
     roomCode: string,
     socketId: string,
-    payload: { userId?: string; guestName?: string; reconnectToken?: string }
+    payload: {
+      userId?: string;
+      guestName?: string;
+      avatarPreset?: string;
+      buzzerSound?: string;
+      reconnectToken?: string;
+    }
   ): { slotIndex: number; reconnectToken: string; displayName: string } | null {
     const room = this.getRoom(roomCode);
     if (!room) return null;
@@ -93,9 +111,11 @@ export class RoomManager {
 
     const reconnectToken = randomUUID();
     const displayName = payload.guestName?.trim() || `Joueur ${assignedSlot + 1}`;
-    const avatarPreset = AVATAR_PRESETS[assignedSlot % AVATAR_PRESETS.length]!;
-    const avatarColor = BUZZER_COLORS[assignedSlot % BUZZER_COLORS.length]!.hex;
-    const buzzerSound = BUZZER_SOUNDS[assignedSlot % BUZZER_SOUNDS.length]!;
+    const avatarPreset =
+      payload.avatarPreset ?? AVATAR_PRESETS[assignedSlot % AVATAR_PRESETS.length] ?? 'rocker';
+    const avatarColor = BUZZER_COLORS[assignedSlot % BUZZER_COLORS.length]?.hex ?? '#0066FF';
+    const buzzerSound =
+      payload.buzzerSound ?? BUZZER_SOUNDS[assignedSlot % BUZZER_SOUNDS.length] ?? 'classic_tv';
 
     room.players.set(assignedSlot, {
       slotIndex: assignedSlot,
@@ -116,6 +136,54 @@ export class RoomManager {
   }
 
   /**
+   * Marque un joueur comme déconnecté sans supprimer son pupitre (permet la reconnexion via reconnectToken)
+   */
+  markPlayerDisconnected(roomCode: string, slotIndex: number): boolean {
+    const room = this.getRoom(roomCode);
+    if (!room) return false;
+    const player = room.players.get(slotIndex);
+    if (!player) return false;
+
+    player.isConnected = false;
+    player.socketId = undefined;
+    return true;
+  }
+
+  /**
+   * Vérifie si tous les joueurs actuellement connectés ont verrouillé leur réponse (CONN-01)
+   */
+  areAllConnectedPlayersAnswered(roomCode: string): boolean {
+    const room = this.getRoom(roomCode);
+    if (!room) return false;
+
+    const connectedSlots: number[] = [];
+    for (const [slotIndex, player] of room.players.entries()) {
+      if (player.isConnected) {
+        connectedSlots.push(slotIndex);
+      }
+    }
+
+    if (connectedSlots.length === 0) return false;
+    return connectedSlots.every((slot) => room.answers.has(slot));
+  }
+
+  /**
+   * Nettoie les timers et purge les verrous et l'état mémoire d'un salon (MEM-01)
+   */
+  destroyRoom(roomCode: string): boolean {
+    const room = this.getRoom(roomCode);
+    if (!room) return false;
+
+    if (room.activeWatchdogTimer) {
+      clearTimeout(room.activeWatchdogTimer);
+      room.activeWatchdogTimer = undefined;
+    }
+
+    this.localLocks.delete(`room:${room.roomCode}:buzz_lock`);
+    return this.rooms.delete(room.roomCode);
+  }
+
+  /**
    * Verrou Atomique de Buzzer (Section 7) :
    * Équivalent Redis : SET room:{code}:buzz_lock {slotIndex} NX PX 4000
    */
@@ -124,7 +192,8 @@ export class RoomManager {
     slotIndex: number,
     redisClient?: { set: (...args: unknown[]) => Promise<unknown> }
   ): Promise<boolean> {
-    const key = `room:${roomCode}:buzz_lock`;
+    const normalizedCode = roomCode.trim().toUpperCase();
+    const key = `room:${normalizedCode}:buzz_lock`;
     if (redisClient) {
       const res = await redisClient.set(key, String(slotIndex), 'NX', 'PX', 4000);
       return res === 'OK';
@@ -159,13 +228,17 @@ export class RoomManager {
           statusBanner: 'REGARDEZ LA TÉLÉVISION — MODE TAUNT ACTIF',
         };
 
-      case 'QUESTION_ACTIVE':
+      case 'QUESTION_ACTIVE': {
+        const alreadyAnswered = room.answers.has(slotIndex);
         return {
           phase: room.phase,
-          redLedMode: 'PULSE_READY',
-          activeColors: [true, true, true, true],
-          statusBanner: 'RÉPONDEZ SUR LA TV !',
+          redLedMode: alreadyAnswered ? 'SOLID_LOCKED' : 'PULSE_READY',
+          activeColors: alreadyAnswered ? [false, false, false, false] : [true, true, true, true],
+          statusBanner: alreadyAnswered
+            ? 'RÉPONSE VERROUILLÉE — REGARDEZ LA TV !'
+            : 'RÉPONDEZ SUR LA TV !',
         };
+      }
 
       case 'BUZZ_LOCKED_DECISION': {
         const isHolder = room.buzzLockedSlot === slotIndex;
@@ -201,7 +274,7 @@ export class RoomManager {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     let code = '';
     for (let i = 0; i < 4; i++) {
-      code += chars[Math.floor(Math.random() * chars.length)];
+      code += chars[Math.floor(Math.random() * chars.length)] ?? 'A';
     }
     return this.rooms.has(code) ? this.generateRoomCode() : code;
   }

@@ -1,5 +1,5 @@
-import type { BuzzerColor, QuestionFormat } from './schemas';
-import type { RoundType } from './constants';
+import type { BuzzerColor, QuestionFormat } from './schemas.js';
+import type { RoundType } from './constants.js';
 
 export type RoomPhase =
   | 'LOBBY'

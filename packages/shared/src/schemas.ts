@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { AVATAR_PRESETS, BUZZER_SOUNDS, ROUND_TYPES } from './constants';
+import { AVATAR_PRESETS, BUZZER_SOUNDS, ROUND_TYPES } from './constants.js';
 
 export const BuzzerColorSchema = z.union([
   z.literal(0),
@@ -8,6 +8,25 @@ export const BuzzerColorSchema = z.union([
   z.literal(3),
 ]);
 export type BuzzerColor = z.infer<typeof BuzzerColorSchema>;
+
+export const RoomPhaseSchema = z.enum([
+  'LOBBY',
+  'GAME_INTRO',
+  'LOSER_PICK_ROUND',
+  'ROUND_RULES_INTRO',
+  'HIGH_STAKES_BET',
+  'ON_THE_SPOT_VOTE',
+  'QUESTION_ACTIVE',
+  'BUZZ_LOCKED_DECISION',
+  'PIE_AIMING',
+  'POINT_STEAL_TARGET',
+  'QUESTION_REVEAL',
+  'ROUND_LEADERBOARD',
+  'FINAL_COUNTDOWN',
+  'FINAL_FLASHPOINT',
+  'AWARDS_CEREMONY',
+  'PODIUM_END',
+]);
 
 export const QuestionFormatSchema = z.enum([
   'TEXT_CLASSIC',
@@ -52,13 +71,36 @@ export const QuizPackCreateSchema = z.object({
     .min(12, 'Un pack doit contenir au minimum 12 questions pour être sauvegardé ou publié.'),
 });
 
+export const HostCreateRoomPayloadSchema = z.object({
+  format: z.enum(['SHORT', 'NORMAL', 'LONG', 'CUSTOM']),
+  customRoundsCount: z.number().int().min(2).max(12).optional(),
+});
+
+export const HostReadyForTimerPayloadSchema = z.object({
+  phase: RoomPhaseSchema,
+  questionId: z.string().min(1).max(64).optional(),
+});
+
 export const ControllerJoinPayloadSchema = z.object({
-  roomCode: z.string().length(4).toUpperCase(),
+  roomCode: z
+    .string()
+    .trim()
+    .length(4)
+    .transform((v) => v.toUpperCase()),
   userId: z.string().uuid().optional(),
-  guestName: z.string().min(2).max(20).optional(),
+  guestName: z.string().trim().min(1).max(20).optional(),
   avatarPreset: z.enum(AVATAR_PRESETS).optional(),
   buzzerSound: z.enum(BUZZER_SOUNDS).optional(),
-  reconnectToken: z.string().optional(),
+  reconnectToken: z.string().min(1).max(128).optional(),
+});
+
+export const ControllerPressRedPayloadSchema = z.object({
+  clientSentAt: z.number().finite(),
+});
+
+export const ControllerPressColorPayloadSchema = z.object({
+  color: BuzzerColorSchema,
+  clientSentAt: z.number().finite(),
 });
 
 export const RoundTypeSchema = z.enum(ROUND_TYPES);
