@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: buzz_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: buzz
+      POSTGRES_PASSWORD: buzz_secret_password
+      POSTGRES_DB: buzz_web_world
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./apps/server/db/migrations:/docker-entrypoint-initdb.d:ro
+
+  redis:
+    image: redis:7-alpine
+    container_name: buzz_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio:latest
+    container_name: buzz_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: buzz_admin
+      MINIO_ROOT_PASSWORD: buzz_minio_password
+    ports:
+      - "9000:9000"
+      - "9001:9001"
