@@ -1,5 +1,7 @@
 import type {
+  AwardedBuzzTitle,
   BuzzerColor,
+  PlayerAwardTelemetry,
   PlayerSlotState,
   RedLedMode,
   RoomPhase,
@@ -15,11 +17,22 @@ import {
 } from '@buzz/shared';
 import { randomUUID } from 'node:crypto';
 
-import type { QuestionEntity, QuizPackEntity } from '../repositories/interfaces.js';
+import type {
+  AppRepositories,
+  QuestionEntity,
+  QuizPackEntity,
+} from '../repositories/interfaces.js';
 
 export interface LoserPickOption {
   roundType: RoundType;
   packTitle: string;
+}
+
+export interface RoomInteractionEntry {
+  attackerSlot: number;
+  victimSlot: number;
+  kind: 'PIE_HIT' | 'POINT_STEAL';
+  pointsStolen?: number;
 }
 
 export interface ActiveRoom {
@@ -51,6 +64,19 @@ export interface ActiveRoom {
   pointStealTargetOptions: number[];
   questionPool: QuestionEntity[];
   packTitlesPool: string[];
+  interactionLog: RoomInteractionEntry[];
+  playerAnswerStats: Map<
+    number,
+    {
+      totalAnswered: number;
+      correctAnswers: number;
+      reactionSecSum: number;
+      bombAndHighStakesLossPts: number;
+      rankBeforeFinal?: number;
+    }
+  >;
+  awards: AwardedBuzzTitle[];
+  winnerSlot: number | null;
   activeWatchdogTimer?: NodeJS.Timeout;
 }
 
@@ -98,10 +124,18 @@ export class RoomManager {
       pointStealTargetOptions: [],
       questionPool: [],
       packTitlesPool: [],
+      interactionLog: [],
+      playerAnswerStats: new Map(),
+      awards: [],
+      winnerSlot: null,
     };
 
     this.rooms.set(roomCode, room);
     return room;
+  }
+
+  getActiveRoomsCount(): number {
+    return this.rooms.size;
   }
 
   getRoom(roomCode: string): ActiveRoom | undefined {
@@ -533,9 +567,15 @@ export class RoomManager {
     );
     buzzerPlayer.score += buzzerDelta;
     buzzerPlayer.riveState = 4; // Celebrate
-    if (targetPlayer) {
+    if (targetPlayer && resolvedTargetSlot !== undefined) {
       targetPlayer.score += targetDelta;
       targetPlayer.riveState = 5;
+      this.recordInteractionTelemetry(roomCode, {
+        attackerSlot: slotIndex,
+        victimSlot: resolvedTargetSlot,
+        kind: 'POINT_STEAL',
+        pointsStolen: Math.abs(targetDelta),
+      });
     }
 
     room.phase = 'QUESTION_REVEAL';
@@ -574,6 +614,12 @@ export class RoomManager {
     buzzerPlayer.riveState = 4;
     targetPlayer.score += targetDelta;
     targetPlayer.riveState = 5;
+    this.recordInteractionTelemetry(roomCode, {
+      attackerSlot: slotIndex,
+      victimSlot: targetSlot,
+      kind: 'POINT_STEAL',
+      pointsStolen: Math.abs(targetDelta),
+    });
     room.phase = 'QUESTION_REVEAL';
 
     return { targetSlot, buzzerDelta, targetDelta };
@@ -664,6 +710,11 @@ export class RoomManager {
     const nextLives = Math.max(0, currentLives - 1);
     target.roundMeta = { ...target.roundMeta, lives: nextLives };
     target.riveState = 5;
+    this.recordInteractionTelemetry(roomCode, {
+      attackerSlot: shooterSlot,
+      victimSlot: targetSlot,
+      kind: 'PIE_HIT',
+    });
 
     // Vérifier s'il ne reste plus qu'un seul survivant
     const allSurvivors = Array.from(room.players.values()).filter(
@@ -734,6 +785,7 @@ export class RoomManager {
       const explosionDelta = ScoringMath.passTheBombExplosionDelta(holder.score);
       holder.score += explosionDelta;
       holder.riveState = 5;
+      this.recordAnswerTelemetry(roomCode, slotIndex, false, 0, Math.abs(explosionDelta));
       room.phase = 'ROUND_LEADERBOARD';
       return {
         exploded: true,
@@ -926,6 +978,7 @@ export class RoomManager {
 
     if (aliveSlots.length === 1) {
       const winnerSlot = aliveSlots[0]!;
+      room.winnerSlot = winnerSlot;
       room.phase = 'AWARDS_CEREMONY';
       return {
         updatedHeights,
@@ -969,8 +1022,153 @@ export class RoomManager {
       winner.riveState = 4;
     }
 
+    room.winnerSlot = winnerSlot;
     room.phase = 'AWARDS_CEREMONY';
     return { winnerSlot };
+  }
+
+  // ==========================================================================
+  // CÉRÉMONIE DES TITRES (« BUZZ! AWARDS ») & RIVALITÉS ENTRE AMIS (MASTER_RFC §5 & §6)
+  // ==========================================================================
+
+  recordInteractionTelemetry(roomCode: string, entry: RoomInteractionEntry): void {
+    const room = this.getRoom(roomCode);
+    if (!room) return;
+    room.interactionLog.push(entry);
+  }
+
+  recordAnswerTelemetry(
+    roomCode: string,
+    slotIndex: number,
+    isCorrect: boolean,
+    reactionSec: number,
+    bombOrStakesLossPts = 0
+  ): void {
+    const room = this.getRoom(roomCode);
+    if (!room) return;
+    const current = room.playerAnswerStats.get(slotIndex) ?? {
+      totalAnswered: 0,
+      correctAnswers: 0,
+      reactionSecSum: 0,
+      bombAndHighStakesLossPts: 0,
+    };
+    current.totalAnswered += 1;
+    if (isCorrect) current.correctAnswers += 1;
+    current.reactionSecSum += Math.max(0, reactionSec);
+    current.bombAndHighStakesLossPts += Math.max(0, bombOrStakesLossPts);
+    room.playerAnswerStats.set(slotIndex, current);
+  }
+
+  async finalizeCeremonyAndRivalries(
+    roomCode: string,
+    repos: AppRepositories
+  ): Promise<{ awards: AwardedBuzzTitle[]; winnerSlot: number | null } | null> {
+    const room = this.getRoom(roomCode);
+    if (!room) return null;
+
+    const sortedPlayers = Array.from(room.players.values()).sort((a, b) => b.score - a.score);
+    const resolvedWinnerSlot =
+      room.winnerSlot ?? (sortedPlayers[0] ? sortedPlayers[0].slotIndex : null);
+    room.winnerSlot = resolvedWinnerSlot;
+    room.phase = 'AWARDS_CEREMONY';
+
+    // Construire PlayerAwardTelemetry[] pour le moteur pur ScoringMath.computeBuzzAwards
+    const telemetryList: PlayerAwardTelemetry[] = sortedPlayers.map((p, idx) => {
+      const stats = room.playerAnswerStats.get(p.slotIndex);
+      const totalAnswered = stats?.totalAnswered ?? 0;
+      const correctAnswers = stats?.correctAnswers ?? 0;
+      const avgReactionSec =
+        totalAnswered > 0 ? (stats?.reactionSecSum ?? 0) / totalAnswered : 2.5;
+
+      let piesReceived = 0;
+      let pointsStolenFromMeCount = 0;
+      const targetedCountByVictimSlot: Record<number, number> = {};
+
+      for (const item of room.interactionLog) {
+        if (item.victimSlot === p.slotIndex) {
+          if (item.kind === 'PIE_HIT') piesReceived += 1;
+          if (item.kind === 'POINT_STEAL') pointsStolenFromMeCount += 1;
+        }
+        if (item.attackerSlot === p.slotIndex) {
+          targetedCountByVictimSlot[item.victimSlot] =
+            (targetedCountByVictimSlot[item.victimSlot] ?? 0) + 1;
+        }
+      }
+
+      const finalRank = p.slotIndex === resolvedWinnerSlot ? 1 : idx + 1;
+      return {
+        slotIndex: p.slotIndex,
+        displayName: p.displayName,
+        totalAnswered,
+        correctAnswers,
+        avgReactionSec,
+        piesReceived,
+        pointsStolenFromMeCount,
+        targetedCountByVictimSlot,
+        bombAndHighStakesLossPts: stats?.bombAndHighStakesLossPts ?? 0,
+        tauntPresses: p.tauntCount,
+        rankBeforeFinal: stats?.rankBeforeFinal ?? finalRank,
+        leadBeforeFinalPts: 0,
+        finalRank,
+      };
+    });
+
+    const awards = ScoringMath.computeBuzzAwards(telemetryList);
+    room.awards = awards;
+
+    // Mise à jour des statistiques globales des joueurs authentifiés
+    for (const p of sortedPlayers) {
+      if (!p.userId) continue;
+      const stats = room.playerAnswerStats.get(p.slotIndex);
+      const totalAnswered = stats?.totalAnswered ?? 0;
+      const correctAnswers = stats?.correctAnswers ?? 0;
+      const avgReactionMs =
+        totalAnswered > 0 ? Math.round(((stats?.reactionSecSum ?? 0) / totalAnswered) * 1000) : 0;
+      const firstAward = awards.find((a) => a.slotIndex === p.slotIndex);
+
+      await repos.users.updateStatsAfterGame(p.userId, {
+        won: p.slotIndex === resolvedWinnerSlot,
+        questionsCount: totalAnswered,
+        correctCount: correctAnswers,
+        avgReactionMs,
+        awardCode: firstAward?.code,
+      });
+    }
+
+    // Mise à jour des Rivalités entre Amis (RIV-01 : user_a_id < user_b_id garanti par repos.rivalries.upsertRivalryStats)
+    const authPlayers = sortedPlayers.filter((p) => Boolean(p.userId));
+    for (let i = 0; i < authPlayers.length; i++) {
+      for (let j = i + 1; j < authPlayers.length; j++) {
+        const p1 = authPlayers[i]!;
+        const p2 = authPlayers[j]!;
+        if (!p1.userId || !p2.userId || p1.userId === p2.userId) continue;
+
+        let p1TartedP2 = 0;
+        let p2TartedP1 = 0;
+        let p1StoleP2 = 0;
+        let p2StoleP1 = 0;
+        for (const item of room.interactionLog) {
+          if (item.attackerSlot === p1.slotIndex && item.victimSlot === p2.slotIndex) {
+            if (item.kind === 'PIE_HIT') p1TartedP2 += 1;
+            if (item.kind === 'POINT_STEAL') p1StoleP2 += item.pointsStolen ?? 0;
+          } else if (item.attackerSlot === p2.slotIndex && item.victimSlot === p1.slotIndex) {
+            if (item.kind === 'PIE_HIT') p2TartedP1 += 1;
+            if (item.kind === 'POINT_STEAL') p2StoleP1 += item.pointsStolen ?? 0;
+          }
+        }
+
+        await repos.rivalries.upsertRivalryStats(p1.userId, p2.userId, {
+          user1FinishedAhead: p1.score > p2.score,
+          user2FinishedAhead: p2.score > p1.score,
+          user1TartedUser2: p1TartedP2,
+          user2TartedUser1: p2TartedP1,
+          user1StoleFromUser2Pts: p1StoleP2,
+          user2StoleFromUser1Pts: p2StoleP1,
+        });
+      }
+    }
+
+    return { awards, winnerSlot: resolvedWinnerSlot };
   }
 
   /**
@@ -985,6 +1183,7 @@ export class RoomManager {
     switch (room.phase) {
       case 'LOBBY':
       case 'ROUND_LEADERBOARD':
+      case 'AWARDS_CEREMONY':
       case 'PODIUM_END':
         return {
           phase: room.phase,

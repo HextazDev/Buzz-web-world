@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { reactive, ref } from 'vue';
 import { io, type Socket } from 'socket.io-client';
 import type {
+  AwardedBuzzTitle,
   BuzzerColor,
   HostToServerEvents,
   PlayerSlotState,
@@ -41,6 +42,8 @@ export const useHostStore = defineStore('host', () => {
   const pieTargetCursorSlot = ref<number | null>(null);
   const roomPoolPackCount = ref(2);
   const roomPoolQuestionCount = ref(24);
+  const awards = ref<AwardedBuzzTitle[]>([]);
+  const winnerSlot = ref<number | null>(null);
 
   const players = ref<PlayerSlotState[]>([]);
   const presenterSubtitle = ref('Bienvenue sur le plateau de Buzz! Web World !');
@@ -79,6 +82,8 @@ export const useHostStore = defineStore('host', () => {
     if (state.roomPoolQuestionCount !== undefined) {
       roomPoolQuestionCount.value = state.roomPoolQuestionCount;
     }
+    if (state.awards !== undefined) awards.value = state.awards;
+    if (state.winnerSlot !== undefined) winnerSlot.value = state.winnerSlot;
     players.value = state.players;
   }
 
@@ -174,6 +179,13 @@ export const useHostStore = defineStore('host', () => {
       pieTargetCursorSlot.value = currentTargetSlot;
     });
 
+    socket.on('host:awards_ceremony', (payload) => {
+      currentPhase.value = 'AWARDS_CEREMONY';
+      winnerSlot.value = payload.winnerSlot;
+      awards.value = payload.awards;
+      soundManager.playStudioEffect('Reveal');
+    });
+
     socket.on('host:presenter_speak_start', ({ utteranceId, mood, subtitleText }) => {
       presenterMood.value = mood;
       presenterSubtitle.value = subtitleText;
@@ -228,6 +240,8 @@ export const useHostStore = defineStore('host', () => {
     pieTargetCursorSlot,
     roomPoolPackCount,
     roomPoolQuestionCount,
+    awards,
+    winnerSlot,
     players,
     presenterSubtitle,
     presenterMood,

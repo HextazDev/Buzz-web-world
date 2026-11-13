@@ -119,9 +119,21 @@ async function bootstrap() {
       pieTargetCursorSlot: room.pieTargetCursorSlot,
       roomPoolPackCount: room.packTitlesPool.length,
       roomPoolQuestionCount: room.questionPool.length,
+      awards: room.awards,
+      winnerSlot: room.winnerSlot,
       players: Array.from(room.players.values()),
     });
     syncAllControllers(roomCode);
+  }
+
+  async function triggerAwardsCeremony(roomCode: string) {
+    const ceremony = await roomManager.finalizeCeremonyAndRivalries(roomCode, repos);
+    if (!ceremony) return;
+    io.to(`room:${roomCode}:host`).emit('host:awards_ceremony', {
+      winnerSlot: ceremony.winnerSlot,
+      awards: ceremony.awards,
+    });
+    broadcastRoomState(roomCode);
   }
 
   function startQuestionTimer(roomCode: string, durationMs = 10000) {
@@ -255,19 +267,33 @@ async function bootstrap() {
       const resultsBySlot: Record<number, { isCorrect: boolean; reactionSec: number }> = {};
       for (const [slotIndex] of room.players.entries()) {
         const ans = room.answers.get(slotIndex);
-        resultsBySlot[slotIndex] = {
-          isCorrect: ans?.color === q.correctIndex,
-          reactionSec: ans?.reactionSec ?? 10,
-        };
+        const isCorrect = ans?.color === q.correctIndex;
+        const reactionSec = ans?.reactionSec ?? 10;
+        resultsBySlot[slotIndex] = { isCorrect, reactionSec };
+        if (ans) {
+          roomManager.recordAnswerTelemetry(roomCode, slotIndex, isCorrect, reactionSec, 0);
+        }
       }
-      roomManager.resolveFinalCountdownQuestion(roomCode, resultsBySlot);
+      const finalRes = roomManager.resolveFinalCountdownQuestion(roomCode, resultsBySlot);
       for (const [slotIndex, player] of room.players.entries()) {
         scoreDeltas[slotIndex] = 0;
         updatedScores[slotIndex] = player.score;
       }
+      if (finalRes && finalRes.winnerSlot !== null) {
+        void triggerAwardsCeremony(roomCode);
+      }
     } else if (room.currentRoundType === 'ON_THE_SPOT' && room.onTheSpotTargetSlot !== null) {
       const targetAns = room.answers.get(room.onTheSpotTargetSlot);
       const isCorrect = targetAns?.color === q.correctIndex;
+      if (targetAns) {
+        roomManager.recordAnswerTelemetry(
+          roomCode,
+          room.onTheSpotTargetSlot,
+          isCorrect,
+          targetAns.reactionSec,
+          0
+        );
+      }
       const res = roomManager.resolveOnTheSpotTurn(roomCode, isCorrect);
       for (const [slotIndex, player] of room.players.entries()) {
         scoreDeltas[slotIndex] =
@@ -283,6 +309,7 @@ async function bootstrap() {
         const ans = room.answers.get(slotIndex);
         const isCorrect = ans?.color === q.correctIndex;
         let delta = 0;
+        let stakesLoss = 0;
 
         if (room.currentRoundType === 'FASTEST_FINGER') {
           delta = ScoringMath.fastestFinger(isCorrect, ans?.reactionSec ?? 10);
@@ -291,6 +318,7 @@ async function bootstrap() {
           const bet = (player.roundMeta?.stakeBet ?? 50) as 50 | 100 | 250 | 500;
           delta = ScoringMath.highStakes(isCorrect, bet, player.score);
           player.score += delta;
+          if (delta < 0) stakesLoss = Math.abs(delta);
         } else if (room.currentRoundType === 'BOILING_POINT') {
           const step = roomManager.applyBoilingPointAnswer(roomCode, slotIndex, isCorrect);
           delta = step?.pointsDelta ?? 0;
@@ -299,6 +327,15 @@ async function bootstrap() {
           player.score += delta;
         }
 
+        if (ans) {
+          roomManager.recordAnswerTelemetry(
+            roomCode,
+            slotIndex,
+            isCorrect,
+            ans.reactionSec,
+            stakesLoss
+          );
+        }
         player.riveState = isCorrect ? 4 : 5;
         scoreDeltas[slotIndex] = delta;
         updatedScores[slotIndex] = player.score;
@@ -539,7 +576,7 @@ async function bootstrap() {
           broadcastRoomState(roomCode);
         } else if (room.currentRoundType === 'FINAL_FLASHPOINT') {
           roomManager.resolveFlashpointDecision(roomCode, slotIndex, color === currentQ.correctIndex);
-          broadcastRoomState(roomCode);
+          void triggerAwardsCeremony(roomCode);
         }
         return;
       }

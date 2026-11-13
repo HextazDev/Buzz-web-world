@@ -79,9 +79,53 @@
           </span>
         </div>
 
+        <!-- Phase Spéciale : Cérémonie des Titres (« Buzz! Awards ») & Podium Final -->
+        <div
+          v-if="host.currentPhase === 'AWARDS_CEREMONY' || host.currentPhase === 'PODIUM_END'"
+          class="w-full max-w-5xl flex flex-col items-center gap-4 text-center"
+        >
+          <div class="px-4 py-1 rounded-full bg-amber-500/20 border border-amber-400/50 text-amber-300 text-xs font-black uppercase tracking-widest">
+            🏆 CÉRÉMONIE DES TITRES — BUZZ! AWARDS
+          </div>
+          <h2 class="text-4xl font-black text-amber-400">
+            <span v-if="host.winnerSlot !== null && host.getPlayerAtSlot(host.winnerSlot)">
+              👑 VICTOIRE DE {{ host.getPlayerAtSlot(host.winnerSlot)?.displayName }} ({{ host.getPlayerAtSlot(host.winnerSlot)?.score }} PTS) !
+            </span>
+            <span v-else>FIN DU SHOW !</span>
+          </h2>
+
+          <div
+            v-if="host.awards.length > 0"
+            class="grid grid-cols-1 md:grid-cols-3 gap-3 w-full mt-2"
+          >
+            <div
+              v-for="award in host.awards"
+              :key="award.code"
+              class="p-4 rounded-2xl bg-slate-950/90 border-2 border-amber-400/40 flex flex-col items-start text-left gap-1 shadow-xl"
+            >
+              <div class="flex items-center justify-between w-full">
+                <span class="text-[10px] font-black uppercase tracking-widest text-amber-300 bg-amber-500/15 px-2 py-0.5 rounded">
+                  {{ award.code }}
+                </span>
+                <span class="text-xs font-mono text-emerald-300 font-bold">
+                  {{ award.statLabel }}
+                </span>
+              </div>
+              <div class="text-lg font-black text-white mt-1">{{ award.title }}</div>
+              <div class="text-sm font-bold text-indigo-300">
+                Décerné à {{ award.displayName }} (Pupitre {{ award.slotIndex + 1 }})
+              </div>
+              <p class="text-xs text-slate-400 mt-1">{{ award.description }}</p>
+            </div>
+          </div>
+          <p v-else class="text-slate-400 text-sm">
+            Une partie propre et sans bavure — aucun seuil d'Award satirique franchi ce soir !
+          </p>
+        </div>
+
         <!-- Phase Spéciale : Choix du Perdant (LOSER_PICK_ROUND) -->
         <div
-          v-if="host.currentPhase === 'LOSER_PICK_ROUND'"
+          v-else-if="host.currentPhase === 'LOSER_PICK_ROUND'"
           class="w-full max-w-3xl flex flex-col items-center gap-4 text-center"
         >
           <h2 class="text-3xl font-black text-amber-400">

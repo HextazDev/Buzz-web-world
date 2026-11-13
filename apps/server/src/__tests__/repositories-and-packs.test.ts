@@ -228,4 +228,80 @@ describe('Cloud-First Repositories, Auth & Packs REST API, and Room Question Poo
 
     await app.close();
   });
+
+  it('[RIV-01 & AWARD-01] computes Buzz! Awards at game end and persists ordered friend_rivalries (user_a_id < user_b_id) + global_stats', async () => {
+    const repos = createInMemoryRepositories();
+    const userA = await repos.users.createUser(
+      {
+        username: 'AlphaUser',
+        email: 'alpha@example.com',
+        password: 'Password123!',
+        avatarPreset: 'rocker',
+        avatarColor: '#0066FF',
+        buzzerSound: 'classic_tv',
+      },
+      'hash-a'
+    );
+    const userB = await repos.users.createUser(
+      {
+        username: 'BetaUser',
+        email: 'beta@example.com',
+        password: 'Password123!',
+        avatarPreset: 'pirate',
+        avatarColor: '#FF6600',
+        buzzerSound: 'laser',
+      },
+      'hash-b'
+    );
+
+    const roomManager = new RoomManager();
+    const room = roomManager.createRoom('host-1', 'SHORT');
+    roomManager.joinOrReconnectPlayer(room.roomCode, 'sock-a', {
+      userId: userA.id,
+      guestName: 'AlphaUser',
+    });
+    roomManager.joinOrReconnectPlayer(room.roomCode, 'sock-b', {
+      userId: userB.id,
+      guestName: 'BetaUser',
+    });
+
+    // Simulate AlphaUser winning with > 40 taunts and BetaUser getting tarted & stolen
+    const playerA = room.players.get(0)!;
+    const playerB = room.players.get(1)!;
+    playerA.score = 1800;
+    playerA.tauntCount = 45;
+    playerB.score = 900;
+
+    roomManager.recordInteractionTelemetry(room.roomCode, {
+      attackerSlot: 0,
+      victimSlot: 1,
+      kind: 'PIE_HIT',
+    });
+    roomManager.recordInteractionTelemetry(room.roomCode, {
+      attackerSlot: 0,
+      victimSlot: 1,
+      kind: 'POINT_STEAL',
+      pointsStolen: 300,
+    });
+
+    const ceremony = await roomManager.finalizeCeremonyAndRivalries(room.roomCode, repos);
+    expect(ceremony).not.toBeNull();
+    expect(ceremony!.winnerSlot).toBe(0);
+    expect(ceremony!.awards.some((a) => a.code === 'BOUTTON_ROUGE_ADDICT')).toBe(true);
+    expect(room.phase).toBe('AWARDS_CEREMONY');
+
+    const rivalries = await repos.rivalries.listUserRivalries(userA.id);
+    expect(rivalries.length).toBe(1);
+    const riv = rivalries[0]!;
+    // RIV-01 : Strict lexicographical ordering userAId < userBId
+    expect(riv.userAId < riv.userBId).toBe(true);
+    expect(riv.gamesTogether).toBe(1);
+    expect(riv.aTartedB + riv.bTartedA).toBe(1);
+    expect(riv.aStoleFromBPts + riv.bStoleFromAPts).toBe(300);
+
+    const updatedA = await repos.users.findById(userA.id);
+    expect(updatedA?.globalStats.games_played).toBe(1);
+    expect(updatedA?.globalStats.games_won).toBe(1);
+  });
 });
+

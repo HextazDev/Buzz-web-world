@@ -3,6 +3,42 @@
  * Toutes les fonctions sont pures et déterministes.
  */
 
+export type BuzzAwardCode =
+  | 'TRIGGER_HAPPY'
+  | 'SNIPER'
+  | 'TORTUE_GENIALE'
+  | 'AIMANT_A_TARTES'
+  | 'BOURREAU'
+  | 'KAMIKAZE'
+  | 'COMEBACK_KING'
+  | 'CHOKER'
+  | 'BOUTTON_ROUGE_ADDICT';
+
+export interface PlayerAwardTelemetry {
+  slotIndex: number;
+  displayName: string;
+  totalAnswered: number;
+  correctAnswers: number;
+  avgReactionSec: number;
+  piesReceived: number;
+  pointsStolenFromMeCount: number;
+  targetedCountByVictimSlot: Record<number, number>;
+  bombAndHighStakesLossPts: number;
+  rankBeforeFinal: number;
+  leadBeforeFinalPts: number;
+  finalRank: number;
+  tauntPresses: number;
+}
+
+export interface AwardedBuzzTitle {
+  code: BuzzAwardCode;
+  title: string;
+  description: string;
+  slotIndex: number;
+  displayName: string;
+  statLabel: string;
+}
+
 export const ScoringMath = {
   /**
    * Manche 1 : Accumulation (Point Builder)
@@ -163,4 +199,176 @@ export const ScoringMath = {
     const delta = isCorrect ? (isFastestCorrect ? 0.5 : 0) : -1.5;
     return Math.max(0, Math.round((afterDrain + delta) * 100) / 100);
   },
+
+  /**
+   * Section 5 : Cérémonie des Titres (« Buzz! Awards »)
+   * Attribue de manière pure et déterministe les 9 titres officiels de fin de soirée.
+   * Invariant AWARD-01 : Seuls les titres dont les seuils stricts sont atteints sont décernés.
+   */
+  computeBuzzAwards(telemetry: PlayerAwardTelemetry[]): AwardedBuzzTitle[] {
+    if (telemetry.length === 0) return [];
+    const awards: AwardedBuzzTitle[] = [];
+    const totalPlayers = telemetry.length;
+
+    const byFastest = [...telemetry]
+      .filter((p) => p.totalAnswered > 0)
+      .sort((a, b) => a.avgReactionSec - b.avgReactionSec);
+
+    // 1. TRIGGER_HAPPY (Gâchette Folle) : Temps moyen le plus bas (< 1.8 s) mais taux d'erreur > 50 %
+    const triggerCandidate = byFastest.find((p) => {
+      const errorRate = (p.totalAnswered - p.correctAnswers) / Math.max(1, p.totalAnswered);
+      return p.avgReactionSec < 1.8 && errorRate > 0.5;
+    });
+    if (triggerCandidate) {
+      awards.push({
+        code: 'TRIGGER_HAPPY',
+        title: 'Gâchette Folle',
+        description: 'Réflexes supersoniques mais cerveau resté au vestiaire !',
+        slotIndex: triggerCandidate.slotIndex,
+        displayName: triggerCandidate.displayName,
+        statLabel: `${triggerCandidate.avgReactionSec.toFixed(2)}s moy.`,
+      });
+    }
+
+    // 2. SNIPER (Le Sniper) : Précision >= 85 % avec temps de réaction dans le top 2 du salon
+    const top2FastestSlots = new Set(byFastest.slice(0, 2).map((p) => p.slotIndex));
+    const sniperCandidate = byFastest.find((p) => {
+      const accuracy = p.correctAnswers / Math.max(1, p.totalAnswered);
+      return top2FastestSlots.has(p.slotIndex) && accuracy >= 0.85;
+    });
+    if (sniperCandidate) {
+      const accPct = Math.round(
+        (sniperCandidate.correctAnswers / Math.max(1, sniperCandidate.totalAnswered)) * 100
+      );
+      awards.push({
+        code: 'SNIPER',
+        title: 'Le Sniper',
+        description: 'Précision chirurgicale et vitesse d’exécution redoutable.',
+        slotIndex: sniperCandidate.slotIndex,
+        displayName: sniperCandidate.displayName,
+        statLabel: `${accPct}% de réussite`,
+      });
+    }
+
+    // 3. TORTUE_GENIALE (La Tortue Géniale) : Temps moyen le plus lent (> 5.5 s) mais précision >= 70 %
+    const bySlowest = [...byFastest].reverse();
+    const turtleCandidate = bySlowest.find((p) => {
+      const accuracy = p.correctAnswers / Math.max(1, p.totalAnswered);
+      return p.avgReactionSec > 5.5 && accuracy >= 0.7;
+    });
+    if (turtleCandidate) {
+      awards.push({
+        code: 'TORTUE_GENIALE',
+        title: 'La Tortue Géniale',
+        description: 'Prend tout son temps, mais tape presque toujours dans le mille.',
+        slotIndex: turtleCandidate.slotIndex,
+        displayName: turtleCandidate.displayName,
+        statLabel: `${turtleCandidate.avgReactionSec.toFixed(1)}s de réflexion`,
+      });
+    }
+
+    // 4. AIMANT_A_TARTES (Aimant à Tartes) : Plus grand cumul d'entartages et vols subis (>= 2)
+    const pieMagnet = [...telemetry]
+      .map((p) => ({ p, hits: p.piesReceived + p.pointsStolenFromMeCount }))
+      .filter((x) => x.hits >= 2)
+      .sort((a, b) => b.hits - a.hits)[0];
+    if (pieMagnet) {
+      awards.push({
+        code: 'AIMANT_A_TARTES',
+        title: 'Aimant à Tartes',
+        description: 'La cible préférée de tout le salon ce soir !',
+        slotIndex: pieMagnet.p.slotIndex,
+        displayName: pieMagnet.p.displayName,
+        statLabel: `${pieMagnet.hits} attaques subies`,
+      });
+    }
+
+    // 5. BOURREAU (L'Ennemi Public n°1) : A ciblé le plus grand nombre de fois un même adversaire (>= 2)
+    let bestExecutioner: { p: PlayerAwardTelemetry; maxSingleVictimHits: number } | null = null;
+    for (const p of telemetry) {
+      for (const count of Object.values(p.targetedCountByVictimSlot)) {
+        if (
+          count >= 2 &&
+          (!bestExecutioner || count > bestExecutioner.maxSingleVictimHits)
+        ) {
+          bestExecutioner = { p, maxSingleVictimHits: count };
+        }
+      }
+    }
+    if (bestExecutioner) {
+      awards.push({
+        code: 'BOURREAU',
+        title: 'L’Ennemi Public n°1',
+        description: 'Acharnement thérapeutique caractérisé sur un même adversaire.',
+        slotIndex: bestExecutioner.p.slotIndex,
+        displayName: bestExecutioner.p.displayName,
+        statLabel: `${bestExecutioner.maxSingleVictimHits} attaques ciblées`,
+      });
+    }
+
+    // 6. KAMIKAZE (Le Kamikaze) : Plus grosse perte de points cumulée dans La Bombe et La Mise (>= 250 pts)
+    const kamikaze = [...telemetry]
+      .filter((p) => p.bombAndHighStakesLossPts >= 250)
+      .sort((a, b) => b.bombAndHighStakesLossPts - a.bombAndHighStakesLossPts)[0];
+    if (kamikaze) {
+      awards.push({
+        code: 'KAMIKAZE',
+        title: 'Le Kamikaze',
+        description: 'A tout misé, a tout fait exploser !',
+        slotIndex: kamikaze.slotIndex,
+        displayName: kamikaze.displayName,
+        statLabel: `-${kamikaze.bombAndHighStakesLossPts} pts flambés`,
+      });
+    }
+
+    // 7. COMEBACK_KING (Le Miraculé) : Classé dans les 2 derniers avant la Finale (sur >= 3 joueurs), termine 1er ou 2e
+    if (totalPlayers >= 3) {
+      const comeback = telemetry.find(
+        (p) => p.rankBeforeFinal >= totalPlayers - 1 && (p.finalRank === 1 || p.finalRank === 2)
+      );
+      if (comeback) {
+        awards.push({
+          code: 'COMEBACK_KING',
+          title: 'Le Miraculé',
+          description: 'Revenu des abysses du classement pour braquer le podium final !',
+          slotIndex: comeback.slotIndex,
+          displayName: comeback.displayName,
+          statLabel: `De ${comeback.rankBeforeFinal}e à ${comeback.finalRank}er`,
+        });
+      }
+    }
+
+    // 8. CHOKER (Mental en Chips) : Leader avec > 1000 pts d'avance avant la Finale, mais perd la couronne
+    const choker = telemetry.find(
+      (p) => p.rankBeforeFinal === 1 && p.leadBeforeFinalPts > 1000 && p.finalRank > 1
+    );
+    if (choker) {
+      awards.push({
+        code: 'CHOKER',
+        title: 'Mental en Chips',
+        description: 'Avait un boulevard d’avance avant la Finale et s’est effondré !',
+        slotIndex: choker.slotIndex,
+        displayName: choker.displayName,
+        statLabel: `+${choker.leadBeforeFinalPts} pts dilapidés`,
+      });
+    }
+
+    // 9. BOUTTON_ROUGE_ADDICT (Spammer Compulsif) : Plus de 40 pressions de Taunt hors-question
+    const spammer = [...telemetry]
+      .filter((p) => p.tauntPresses > 40)
+      .sort((a, b) => b.tauntPresses - a.tauntPresses)[0];
+    if (spammer) {
+      awards.push({
+        code: 'BOUTTON_ROUGE_ADDICT',
+        title: 'Spammer Compulsif',
+        description: 'Son pouce est officiellement fusionné avec le Buzzer Rouge.',
+        slotIndex: spammer.slotIndex,
+        displayName: spammer.displayName,
+        statLabel: `${spammer.tauntPresses} buzz hors-jeu`,
+      });
+    }
+
+    return awards;
+  },
 };
+

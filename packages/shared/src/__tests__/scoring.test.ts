@@ -181,4 +181,114 @@ describe('ScoringMath — Moteur Mathématique des Manches (MASTER_RFC §4)', ()
       expect(ScoringMath.finalCountdownQuestionStep(1.0, 1.5, false, false)).toBe(0);
     });
   });
+
+  describe('AWARD-01 : Moteur des 9 Buzz! Awards (computeBuzzAwards — MASTER_RFC §5)', () => {
+    it('awards all 9 official titles when players meet the exact statistical conditions', () => {
+      const awards = ScoringMath.computeBuzzAwards([
+        {
+          slotIndex: 0,
+          displayName: 'TriggerGuy',
+          totalAnswered: 10,
+          correctAnswers: 4, // 60% error (> 50%)
+          avgReactionSec: 1.2, // < 1.8s
+          piesReceived: 0,
+          pointsStolenFromMeCount: 0,
+          targetedCountByVictimSlot: { 2: 5 }, // Bourreau (5 attacks on slot 2)
+          bombAndHighStakesLossPts: 100,
+          rankBeforeFinal: 1,
+          leadBeforeFinalPts: 1200, // > 1000 pts lead before final
+          finalRank: 3, // Lost the crown -> CHOKER
+          tauntPresses: 45, // > 40 -> BOUTTON_ROUGE_ADDICT
+        },
+        {
+          slotIndex: 1,
+          displayName: 'SniperQueen',
+          totalAnswered: 10,
+          correctAnswers: 9, // 90% accuracy (>= 85%)
+          avgReactionSec: 1.5, // Top 2 fastest
+          piesReceived: 1,
+          pointsStolenFromMeCount: 0,
+          targetedCountByVictimSlot: {},
+          bombAndHighStakesLossPts: 0,
+          rankBeforeFinal: 4, // In bottom 2 of 4 players before final
+          leadBeforeFinalPts: 0,
+          finalRank: 1, // Finishes 1st -> COMEBACK_KING
+          tauntPresses: 5,
+        },
+        {
+          slotIndex: 2,
+          displayName: 'TortueSage',
+          totalAnswered: 10,
+          correctAnswers: 8, // 80% accuracy (>= 70%)
+          avgReactionSec: 6.2, // > 5.5s and slowest
+          piesReceived: 4,
+          pointsStolenFromMeCount: 3, // 7 total hits -> AIMANT_A_TARTES
+          targetedCountByVictimSlot: {},
+          bombAndHighStakesLossPts: 900, // Highest loss -> KAMIKAZE
+          rankBeforeFinal: 3,
+          leadBeforeFinalPts: 0,
+          finalRank: 2,
+          tauntPresses: 2,
+        },
+        {
+          slotIndex: 3,
+          displayName: 'NeutralPlayer',
+          totalAnswered: 10,
+          correctAnswers: 5,
+          avgReactionSec: 3.0,
+          piesReceived: 0,
+          pointsStolenFromMeCount: 0,
+          targetedCountByVictimSlot: {},
+          bombAndHighStakesLossPts: 0,
+          rankBeforeFinal: 2,
+          leadBeforeFinalPts: 0,
+          finalRank: 4,
+          tauntPresses: 0,
+        },
+      ]);
+
+      const codes = awards.map((a) => a.code);
+      expect(codes).toContain('TRIGGER_HAPPY');
+      expect(codes).toContain('SNIPER');
+      expect(codes).toContain('TORTUE_GENIALE');
+      expect(codes).toContain('AIMANT_A_TARTES');
+      expect(codes).toContain('BOURREAU');
+      expect(codes).toContain('KAMIKAZE');
+      expect(codes).toContain('COMEBACK_KING');
+      expect(codes).toContain('CHOKER');
+      expect(codes).toContain('BOUTTON_ROUGE_ADDICT');
+
+      expect(awards.find((a) => a.code === 'TRIGGER_HAPPY')?.slotIndex).toBe(0);
+      expect(awards.find((a) => a.code === 'SNIPER')?.slotIndex).toBe(1);
+      expect(awards.find((a) => a.code === 'TORTUE_GENIALE')?.slotIndex).toBe(2);
+      expect(awards.find((a) => a.code === 'AIMANT_A_TARTES')?.slotIndex).toBe(2);
+      expect(awards.find((a) => a.code === 'BOURREAU')?.slotIndex).toBe(0);
+      expect(awards.find((a) => a.code === 'KAMIKAZE')?.slotIndex).toBe(2);
+      expect(awards.find((a) => a.code === 'COMEBACK_KING')?.slotIndex).toBe(1);
+      expect(awards.find((a) => a.code === 'CHOKER')?.slotIndex).toBe(0);
+      expect(awards.find((a) => a.code === 'BOUTTON_ROUGE_ADDICT')?.slotIndex).toBe(0);
+    });
+
+    it('[AWARD-01] returns an empty array when no player satisfies the strict award thresholds', () => {
+      const awards = ScoringMath.computeBuzzAwards([
+        {
+          slotIndex: 0,
+          displayName: 'QuietPlayer',
+          totalAnswered: 4,
+          correctAnswers: 2,
+          avgReactionSec: 3.2,
+          piesReceived: 0,
+          pointsStolenFromMeCount: 0,
+          targetedCountByVictimSlot: {},
+          bombAndHighStakesLossPts: 0,
+          rankBeforeFinal: 1,
+          leadBeforeFinalPts: 250,
+          finalRank: 1,
+          tauntPresses: 3,
+        },
+      ]);
+      expect(awards).toEqual([]);
+    });
+  });
 });
+

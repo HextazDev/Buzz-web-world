@@ -1,5 +1,6 @@
 import type { BuzzerColor, QuestionFormat } from './schemas.js';
 import type { RoundType } from './constants.js';
+import type { AwardedBuzzTitle } from './scoring.js';
 
 export type RoomPhase =
   | 'LOBBY'
@@ -124,7 +125,14 @@ export interface ServerToHostEvents {
     pieTargetCursorSlot?: number | null;
     roomPoolPackCount?: number;
     roomPoolQuestionCount?: number;
+    awards?: AwardedBuzzTitle[];
+    winnerSlot?: number | null;
     players: PlayerSlotState[];
+  }) => void;
+
+  'host:awards_ceremony': (p: {
+    awards: AwardedBuzzTitle[];
+    winnerSlot: number | null;
   }) => void;
 
   /**
@@ -177,3 +185,4 @@ export interface ServerToHostEvents {
     utteranceId: string;
   }) => void;
 }
+
