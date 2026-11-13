@@ -1,0 +1,177 @@
+import { describe, expect, it } from 'vitest';
+import { ScoringMath } from '../scoring.js';
+
+describe('ScoringMath — Moteur Mathématique des Manches (MASTER_RFC §4)', () => {
+  describe('SCORE-01 : Manche 1 — Accumulation (pointBuilder)', () => {
+    it('awards +250 pts on correct answer and 0 pt on wrong answer', () => {
+      expect(ScoringMath.pointBuilder(true)).toBe(250);
+      expect(ScoringMath.pointBuilder(false)).toBe(0);
+    });
+  });
+
+  describe('SCORE-02 : Manche 2 — Doigt sur la gâchette (fastestFinger)', () => {
+    it('awards 0 pt on wrong answer regardless of reaction time', () => {
+      expect(ScoringMath.fastestFinger(false, 0)).toBe(0);
+      expect(ScoringMath.fastestFinger(false, 1.5)).toBe(0);
+    });
+
+    it('computes max(100, floor(400 - 30 * t)) and clamps t within [0, 10]', () => {
+      expect(ScoringMath.fastestFinger(true, -2)).toBe(400);
+      expect(ScoringMath.fastestFinger(true, 0)).toBe(400);
+      expect(ScoringMath.fastestFinger(true, 1)).toBe(370);
+      expect(ScoringMath.fastestFinger(true, 2.5)).toBe(325);
+      expect(ScoringMath.fastestFinger(true, 10)).toBe(100);
+      expect(ScoringMath.fastestFinger(true, 15)).toBe(100);
+    });
+  });
+
+  describe('SCORE-03 : Manche 3 — Stop ou Encore (pointStealer)', () => {
+    it('deducts up to 150 pts on wrong answer without making score negative', () => {
+      expect(ScoringMath.pointStealer(false, 500)).toEqual({
+        buzzerDelta: -150,
+        targetDelta: 0,
+      });
+      expect(ScoringMath.pointStealer(false, 80)).toEqual({
+        buzzerDelta: -80,
+        targetDelta: 0,
+      });
+      expect(ScoringMath.pointStealer(false, 0)).toEqual({
+        buzzerDelta: -0,
+        targetDelta: 0,
+      });
+    });
+
+    it('awards +300 pts and deducts up to 300 pts from target on correct answer', () => {
+      expect(ScoringMath.pointStealer(true, 500, 600)).toEqual({
+        buzzerDelta: 300,
+        targetDelta: -300,
+      });
+      expect(ScoringMath.pointStealer(true, 500, 120)).toEqual({
+        buzzerDelta: 300,
+        targetDelta: -120,
+      });
+      expect(ScoringMath.pointStealer(true, 500)).toEqual({
+        buzzerDelta: 300,
+        targetDelta: -300,
+      });
+    });
+  });
+
+  describe('Manche 4 — L’Entartage (pieFightHit & pieFightRankBonus)', () => {
+    it('awards +100 pts per hit and rank bonuses (+500 for 1st, +250 for 2nd, 0 otherwise)', () => {
+      expect(ScoringMath.pieFightHit()).toBe(100);
+      expect(ScoringMath.pieFightRankBonus(1)).toBe(500);
+      expect(ScoringMath.pieFightRankBonus(2)).toBe(250);
+      expect(ScoringMath.pieFightRankBonus(3)).toBe(0);
+    });
+  });
+
+  describe('SCORE-04 : Manche 5 — La Bombe (passTheBomb)', () => {
+    it('generates an initial fuse strictly between 28000 ms and 42000 ms', () => {
+      for (let i = 0; i < 50; i++) {
+        const fuse = ScoringMath.passTheBombInitialFuseMs();
+        expect(fuse).toBeGreaterThanOrEqual(28000);
+        expect(fuse).toBeLessThanOrEqual(42000);
+      }
+    });
+
+    it('caps explosion penalty at -400 pts with a strict floor at 0 pt', () => {
+      expect(ScoringMath.passTheBombExplosionDelta(1000)).toBe(-400);
+      expect(ScoringMath.passTheBombExplosionDelta(250)).toBe(-250);
+      expect(ScoringMath.passTheBombExplosionDelta(0)).toBe(-0);
+    });
+  });
+
+  describe('SCORE-05 : Manche 6 — La Mise (highStakes)', () => {
+    it('adds the bet on correct answer and deducts up to currentScore on wrong answer', () => {
+      expect(ScoringMath.highStakes(true, 50, 100)).toBe(50);
+      expect(ScoringMath.highStakes(true, 500, 100)).toBe(500);
+      expect(ScoringMath.highStakes(false, 250, 600)).toBe(-250);
+      expect(ScoringMath.highStakes(false, 500, 200)).toBe(-200);
+      expect(ScoringMath.highStakes(false, 100, 0)).toBe(-0);
+    });
+  });
+
+  describe('SCORE-06 : Manche 7 — En Ébullition (boilingPointStep)', () => {
+    it('decrements thermometer on wrong answer without going below 0 and gives 0 pt', () => {
+      expect(ScoringMath.boilingPointStep(false, 0)).toEqual({
+        nextThermometer: 0,
+        pointsDelta: 0,
+        triggeredJackpot: false,
+      });
+      expect(ScoringMath.boilingPointStep(false, 3)).toEqual({
+        nextThermometer: 2,
+        pointsDelta: 0,
+        triggeredJackpot: false,
+      });
+    });
+
+    it('increments thermometer (+50 pts) and triggers +750 pts jackpot at step 6', () => {
+      expect(ScoringMath.boilingPointStep(true, 0)).toEqual({
+        nextThermometer: 1,
+        pointsDelta: 50,
+        triggeredJackpot: false,
+      });
+      expect(ScoringMath.boilingPointStep(true, 4)).toEqual({
+        nextThermometer: 5,
+        pointsDelta: 50,
+        triggeredJackpot: false,
+      });
+      expect(ScoringMath.boilingPointStep(true, 5)).toEqual({
+        nextThermometer: 6,
+        pointsDelta: 800,
+        triggeredJackpot: true,
+      });
+    });
+  });
+
+  describe('SCORE-07 : Manche 8 — Sur la Sellette (onTheSpot)', () => {
+    it('rewards target (+400) and Blue (0) voters (+200) when target succeeds', () => {
+      const res = ScoringMath.onTheSpot(true, { 1: 0, 2: 1, 3: 0 });
+      expect(res).toEqual({
+        targetDelta: 400,
+        voterDeltas: { 1: 200, 2: 0, 3: 200 },
+      });
+    });
+
+    it('gives 0 to target and rewards Orange (1) voters (+200) when target fails', () => {
+      const res = ScoringMath.onTheSpot(false, { 1: 0, 2: 1, 3: 1 });
+      expect(res).toEqual({
+        targetDelta: 0,
+        voterDeltas: { 1: 0, 2: 200, 3: 200 },
+      });
+    });
+  });
+
+  describe('SCORE-08 : Manche 9 — Finale Compte à Rebours (finalCountdownInitialHeights)', () => {
+    it('scales heights proportionally between 6.0 s (min) and 14.0 s (max)', () => {
+      const heights = ScoringMath.finalCountdownInitialHeights({
+        0: 1000,
+        1: 2000,
+        2: 3000,
+      });
+      expect(heights).toEqual({
+        0: 6.0,
+        1: 10.0,
+        2: 14.0,
+      });
+    });
+
+    it('handles perfect score ties (S_max = S_min) without division by zero', () => {
+      const heights = ScoringMath.finalCountdownInitialHeights({
+        0: 1500,
+        1: 1500,
+        2: 1500,
+      });
+      expect(heights).toEqual({
+        0: 6.0,
+        1: 6.0,
+        2: 6.0,
+      });
+    });
+
+    it('returns an empty object when given no players', () => {
+      expect(ScoringMath.finalCountdownInitialHeights({})).toEqual({});
+    });
+  });
+});
