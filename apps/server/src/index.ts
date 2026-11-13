@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import { Redis } from 'ioredis';
 import { Server as SocketIOServer } from 'socket.io';
 import {
   ControllerJoinPayloadSchema,
@@ -7,11 +8,13 @@ import {
   ControllerPressRedPayloadSchema,
   HostCreateRoomPayloadSchema,
   HostReadyForTimerPayloadSchema,
+  ROUND_TYPES,
   ScoringMath,
   type BuzzerColor,
   type ControllerToServerEvents,
   type HostToServerEvents,
   type QuestionFormat,
+  type RoundType,
   type ServerToControllerEvents,
   type ServerToHostEvents,
 } from '@buzz/shared';
@@ -61,6 +64,33 @@ const DEMO_QUESTIONS: DemoQuestion[] = [
     correctIndex: 1,
     presenterIntro: 'Attention, Doigt sur la gâchette : plus vous répondez vite, plus ça paye !',
   },
+  {
+    id: 'q-demo-4',
+    subTheme: 'Sciences & Espace',
+    format: 'TEXT_CLASSIC',
+    prompt: 'Quelle planète du système solaire est surnommée la Planète Rouge ?',
+    choices: ['Vénus', 'Jupiter', 'Mars', 'Saturne'],
+    correctIndex: 2,
+    presenterIntro: 'Main sur le Buzzer Rouge : le premier qui buzze prend la main !',
+  },
+  {
+    id: 'q-demo-5',
+    subTheme: 'Gastronomie & Tartes',
+    format: 'TEXT_CLASSIC',
+    prompt: 'Quel agrume donne son parfum acidulé à la célèbre tarte meringuée ?',
+    choices: ['Le Citron', 'La Fraise', 'La Pomme', 'La Poire'],
+    correctIndex: 0,
+    presenterIntro: 'L’Entartage : répondez juste au Buzzer Rouge pour viser un adversaire !',
+  },
+  {
+    id: 'q-demo-6',
+    subTheme: 'Histoire & Explosions',
+    format: 'TEXT_CLASSIC',
+    prompt: 'En quelle année a eu lieu la prise de la Bastille ?',
+    choices: ['1515', '1789', '1848', '1914'],
+    correctIndex: 1,
+    presenterIntro: 'Attention à la Bombe : répondez juste pour la passer à votre voisin !',
+  },
 ];
 
 async function bootstrap() {
@@ -69,7 +99,26 @@ async function bootstrap() {
 
   const roomManager = new RoomManager();
 
-  app.get('/health', async () => ({ status: 'ok', service: 'buzz-web-world-server' }));
+  // Cloud-First : Connexion Redis optionnelle (fallback mémoire automatique si REDIS_URL est absent)
+  let redisClient: { set: (...args: unknown[]) => Promise<unknown> } | undefined;
+  if (process.env.REDIS_URL) {
+    const ioRedis = new Redis(process.env.REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 1 });
+    ioRedis.on('error', (err) => {
+      app.log.warn({ err }, '[REDIS] Fallback to in-memory locks');
+    });
+    try {
+      await ioRedis.connect();
+      redisClient = ioRedis as unknown as { set: (...args: unknown[]) => Promise<unknown> };
+    } catch {
+      redisClient = undefined;
+    }
+  }
+
+  app.get('/health', async () => ({
+    status: 'ok',
+    service: 'buzz-web-world-server',
+    lockBackend: redisClient ? 'redis' : 'in-memory',
+  }));
 
   await app.ready();
 
@@ -102,27 +151,61 @@ async function bootstrap() {
       currentRoundIndex: room.currentRoundIndex,
       totalRounds: room.totalRounds,
       currentRoundType: room.currentRoundType,
+      loserPickerSlot: room.loserPickerSlot,
+      loserPickOptions: room.loserPickOptions,
+      onTheSpotTargetSlot: room.onTheSpotTargetSlot,
+      bombHolderSlot: room.bombHolderSlot,
+      pieTargetCursorSlot: room.pieTargetCursorSlot,
       players: Array.from(room.players.values()),
     });
     syncAllControllers(roomCode);
   }
 
-  function launchQuestion(roomCode: string, qIdx: number) {
+  function startQuestionTimer(roomCode: string, durationMs = 10000) {
+    const room = roomManager.getRoom(roomCode);
+    if (!room) return;
+
+    roomManager.markReadyForTimer(roomCode, room.phase);
+    if (room.activeWatchdogTimer) clearTimeout(room.activeWatchdogTimer);
+    room.activeWatchdogTimer = setTimeout(() => {
+      revealQuestion(roomCode);
+    }, durationMs);
+  }
+
+  function startPieAimingCycle(roomCode: string) {
+    const room = roomManager.getRoom(roomCode);
+    if (!room) return;
+    if (room.pieAimIntervalTimer) clearInterval(room.pieAimIntervalTimer);
+
+    room.pieAimIntervalTimer = setInterval(() => {
+      const nextTarget = roomManager.advancePieTargetCursor(roomCode);
+      if (nextTarget !== null && room.buzzLockedSlot !== null) {
+        io.to(`room:${roomCode}:host`).emit('host:target_cursor_move', {
+          attackerSlot: room.buzzLockedSlot,
+          currentTargetSlot: nextTarget,
+        });
+      }
+    }, 450);
+  }
+
+  function launchQuestion(roomCode: string, qIdx: number, explicitRoundType?: RoundType) {
     const room = roomManager.getRoom(roomCode);
     if (!room) return;
     const q = DEMO_QUESTIONS[qIdx % DEMO_QUESTIONS.length];
     if (!q) return;
 
-    room.currentQuestionIndex = qIdx;
-    room.answers.clear();
-    room.phase = 'QUESTION_ACTIVE';
-    room.currentRoundIndex = 1;
-    room.currentRoundType = qIdx >= 2 ? 'FASTEST_FINGER' : 'POINT_BUILDER';
-    room.questionOpenedAtMs = Date.now();
+    const roundType =
+      explicitRoundType ??
+      room.currentRoundType ??
+      ROUND_TYPES[qIdx % 8] ??
+      'POINT_BUILDER';
 
-    for (const p of room.players.values()) {
-      p.riveState = 1; // Thinking
+    if (room.currentRoundIndex === 0) {
+      room.currentRoundIndex = 1;
+      roomManager.initRoundState(roomCode, roundType);
     }
+
+    roomManager.prepareQuestion(roomCode, roundType, qIdx);
 
     io.to(`room:${roomCode}:host`).emit('host:presenter_speak_start', {
       utteranceId: `utt-${Date.now()}`,
@@ -133,7 +216,7 @@ async function bootstrap() {
     // Anti-Triche strict : correct_index n'est JAMAIS envoyé dans host:question_show
     io.to(`room:${roomCode}:host`).emit('host:question_show', {
       questionId: q.id,
-      roundNumber: 1,
+      roundNumber: Math.max(1, room.currentRoundIndex),
       questionIndexInRound: qIdx + 1,
       subTheme: q.subTheme,
       format: q.format,
@@ -144,15 +227,16 @@ async function bootstrap() {
 
     broadcastRoomState(roomCode);
 
+    // TIME-01 : Attend host:ready_for_timer (ou démarre automatiquement après 1.5s en fallback)
     if (room.activeWatchdogTimer) clearTimeout(room.activeWatchdogTimer);
     room.activeWatchdogTimer = setTimeout(() => {
-      revealQuestion(roomCode);
-    }, 10000);
+      startQuestionTimer(roomCode, 10000);
+    }, 1500);
   }
 
   function revealQuestion(roomCode: string) {
     const room = roomManager.getRoom(roomCode);
-    if (!room || room.phase !== 'QUESTION_ACTIVE') return;
+    if (!room || (room.phase !== 'QUESTION_ACTIVE' && room.phase !== 'FINAL_COUNTDOWN')) return;
     if (room.activeWatchdogTimer) {
       clearTimeout(room.activeWatchdogTimer);
       room.activeWatchdogTimer = undefined;
@@ -162,23 +246,61 @@ async function bootstrap() {
     const q = DEMO_QUESTIONS[qIdx % DEMO_QUESTIONS.length];
     if (!q) return;
 
-    room.phase = 'QUESTION_REVEAL';
-
     const scoreDeltas: Record<number, number> = {};
     const updatedScores: Record<number, number> = {};
 
-    for (const [slotIndex, player] of room.players.entries()) {
-      const ans = room.answers.get(slotIndex);
-      const isCorrect = ans?.color === q.correctIndex;
-      const delta =
-        room.currentRoundType === 'FASTEST_FINGER'
-          ? ScoringMath.fastestFinger(isCorrect, ans?.reactionSec ?? 10)
-          : ScoringMath.pointBuilder(isCorrect);
+    if (room.currentRoundType === 'FINAL_COUNTDOWN') {
+      const resultsBySlot: Record<number, { isCorrect: boolean; reactionSec: number }> = {};
+      for (const [slotIndex] of room.players.entries()) {
+        const ans = room.answers.get(slotIndex);
+        resultsBySlot[slotIndex] = {
+          isCorrect: ans?.color === q.correctIndex,
+          reactionSec: ans?.reactionSec ?? 10,
+        };
+      }
+      roomManager.resolveFinalCountdownQuestion(roomCode, resultsBySlot);
+      for (const [slotIndex, player] of room.players.entries()) {
+        scoreDeltas[slotIndex] = 0;
+        updatedScores[slotIndex] = player.score;
+      }
+    } else if (room.currentRoundType === 'ON_THE_SPOT' && room.onTheSpotTargetSlot !== null) {
+      const targetAns = room.answers.get(room.onTheSpotTargetSlot);
+      const isCorrect = targetAns?.color === q.correctIndex;
+      const res = roomManager.resolveOnTheSpotTurn(roomCode, isCorrect);
+      for (const [slotIndex, player] of room.players.entries()) {
+        scoreDeltas[slotIndex] =
+          slotIndex === room.onTheSpotTargetSlot
+            ? (res?.targetDelta ?? 0)
+            : (res?.voterDeltas[slotIndex] ?? 0);
+        updatedScores[slotIndex] = player.score;
+      }
+    } else {
+      room.phase = 'QUESTION_REVEAL';
 
-      player.score += delta;
-      player.riveState = isCorrect ? 4 : 5; // 4: Celebrate, 5: Angry_Lose
-      scoreDeltas[slotIndex] = delta;
-      updatedScores[slotIndex] = player.score;
+      for (const [slotIndex, player] of room.players.entries()) {
+        const ans = room.answers.get(slotIndex);
+        const isCorrect = ans?.color === q.correctIndex;
+        let delta = 0;
+
+        if (room.currentRoundType === 'FASTEST_FINGER') {
+          delta = ScoringMath.fastestFinger(isCorrect, ans?.reactionSec ?? 10);
+          player.score += delta;
+        } else if (room.currentRoundType === 'HIGH_STAKES') {
+          const bet = (player.roundMeta?.stakeBet ?? 50) as 50 | 100 | 250 | 500;
+          delta = ScoringMath.highStakes(isCorrect, bet, player.score);
+          player.score += delta;
+        } else if (room.currentRoundType === 'BOILING_POINT') {
+          const step = roomManager.applyBoilingPointAnswer(roomCode, slotIndex, isCorrect);
+          delta = step?.pointsDelta ?? 0;
+        } else {
+          delta = ScoringMath.pointBuilder(isCorrect);
+          player.score += delta;
+        }
+
+        player.riveState = isCorrect ? 4 : 5;
+        scoreDeltas[slotIndex] = delta;
+        updatedScores[slotIndex] = player.score;
+      }
     }
 
     io.to(`room:${roomCode}:host`).emit('host:question_reveal', {
@@ -250,6 +372,8 @@ async function bootstrap() {
       if (!roomCode) return;
       const room = roomManager.getRoom(roomCode);
       if (!room || room.hostSocketId !== socket.id) return;
+
+      startQuestionTimer(roomCode, 10000);
     });
 
     socket.on('controller:join', (rawPayload) => {
@@ -291,21 +415,46 @@ async function bootstrap() {
       const room = roomManager.getRoom(roomCode);
       if (!room) return;
 
-      // Mode Hors-Question : Taunt + Son de Buzzer sur la TV
-      if (room.phase !== 'QUESTION_ACTIVE') {
-        const player = room.players.get(slotIndex);
-        if (player) {
-          player.tauntCount += 1;
-          player.riveState = 6; // Taunt
+      // Manche 4 : Tir de tarte en phase PIE_AIMING
+      if (room.phase === 'PIE_AIMING' && room.buzzLockedSlot === slotIndex) {
+        const hit = roomManager.handlePieThrow(roomCode, slotIndex);
+        if (hit) {
+          io.to(`room:${room.roomCode}:host`).emit('host:avatar_trigger', {
+            slotIndex: hit.targetSlot,
+            trigger: 'Hit_Pie',
+            riveState: 5,
+          });
+          broadcastRoomState(roomCode);
         }
-        io.to(`room:${room.roomCode}:host`).emit('host:avatar_trigger', {
-          slotIndex,
-          riveState: 6,
-          playBuzzerSound: true,
-        });
-        broadcastRoomState(room.roomCode);
         return;
       }
+
+      // Manches à prise de main au Buzzer Rouge (POINT_STEALER, PIE_FIGHT, FINAL_FLASHPOINT)
+      if (room.phase === 'QUESTION_ACTIVE' || room.phase === 'FINAL_FLASHPOINT') {
+        const buzz = await roomManager.handleRedBuzz(roomCode, slotIndex, redisClient);
+        if (buzz.acquired) {
+          io.to(`room:${room.roomCode}:host`).emit('host:avatar_trigger', {
+            slotIndex,
+            riveState: 3,
+            playBuzzerSound: true,
+          });
+          broadcastRoomState(roomCode);
+        }
+        return;
+      }
+
+      // Mode Hors-Question : Taunt + Son de Buzzer sur la TV
+      const player = room.players.get(slotIndex);
+      if (player) {
+        player.tauntCount += 1;
+        player.riveState = 6; // Taunt
+      }
+      io.to(`room:${room.roomCode}:host`).emit('host:avatar_trigger', {
+        slotIndex,
+        riveState: 6,
+        playBuzzerSound: true,
+      });
+      broadcastRoomState(room.roomCode);
     });
 
     socket.on('controller:press_color', (rawPayload) => {
@@ -324,7 +473,94 @@ async function bootstrap() {
       const room = roomManager.getRoom(roomCode);
       if (!room) return;
 
-      if (room.phase === 'QUESTION_ACTIVE') {
+      const qIdx = Math.max(0, room.currentQuestionIndex);
+      const currentQ = DEMO_QUESTIONS[qIdx % DEMO_QUESTIONS.length];
+
+      // 1. Choix du Perdant (LOSER_PICK_ROUND)
+      if (room.phase === 'LOSER_PICK_ROUND') {
+        const pickedRound = roomManager.handleLoserPickSelection(roomCode, slotIndex, color);
+        if (pickedRound) {
+          broadcastRoomState(roomCode);
+          launchQuestion(roomCode, room.currentQuestionIndex + 1, pickedRound);
+        }
+        return;
+      }
+
+      // 2. La Mise — Phase de pari (HIGH_STAKES_BET)
+      if (room.phase === 'HIGH_STAKES_BET') {
+        const bet = roomManager.recordHighStakesBet(roomCode, slotIndex, color);
+        if (bet !== null) {
+          broadcastRoomState(roomCode);
+        }
+        return;
+      }
+
+      // 3. Sur la Sellette — Phase de vote (ON_THE_SPOT_VOTE)
+      if (room.phase === 'ON_THE_SPOT_VOTE') {
+        if (roomManager.recordOnTheSpotVote(roomCode, slotIndex, color)) {
+          broadcastRoomState(roomCode);
+        }
+        return;
+      }
+
+      // 4. Stop ou Encore — Sélection de la cible du vol (POINT_STEAL_TARGET)
+      if (room.phase === 'POINT_STEAL_TARGET') {
+        const steal = roomManager.handlePointStealTargetSelection(roomCode, slotIndex, color);
+        if (steal && currentQ) {
+          broadcastRoomState(roomCode);
+        }
+        return;
+      }
+
+      // 5. Décision après verrouillage du Buzzer Rouge (BUZZ_LOCKED_DECISION)
+      if (room.phase === 'BUZZ_LOCKED_DECISION' && room.buzzLockedSlot === slotIndex && currentQ) {
+        if (room.currentRoundType === 'POINT_STEALER') {
+          roomManager.handlePointStealerDecision(roomCode, slotIndex, color, currentQ.correctIndex);
+          broadcastRoomState(roomCode);
+        } else if (room.currentRoundType === 'PIE_FIGHT') {
+          const aim = roomManager.handlePieFightAnswer(
+            roomCode,
+            slotIndex,
+            color,
+            currentQ.correctIndex
+          );
+          if (aim.enteredAiming) {
+            startPieAimingCycle(roomCode);
+          }
+          broadcastRoomState(roomCode);
+        } else if (room.currentRoundType === 'FINAL_FLASHPOINT') {
+          roomManager.resolveFlashpointDecision(roomCode, slotIndex, color === currentQ.correctIndex);
+          broadcastRoomState(roomCode);
+        }
+        return;
+      }
+
+      // 6. La Bombe (PASS_THE_BOMB)
+      if (
+        room.phase === 'QUESTION_ACTIVE' &&
+        room.currentRoundType === 'PASS_THE_BOMB' &&
+        currentQ
+      ) {
+        const bombStep = roomManager.handleBombHolderAnswer(
+          roomCode,
+          slotIndex,
+          color === currentQ.correctIndex
+        );
+        if (bombStep) {
+          if (bombStep.exploded) {
+            io.to(`room:${room.roomCode}:host`).emit('host:avatar_trigger', {
+              slotIndex,
+              trigger: 'Bomb_Explode',
+              riveState: 5,
+            });
+          }
+          broadcastRoomState(roomCode);
+        }
+        return;
+      }
+
+      // 7. Réponse directe aux 4 couleurs (POINT_BUILDER, FASTEST_FINGER, HIGH_STAKES, BOILING_POINT, ON_THE_SPOT, FINAL_COUNTDOWN)
+      if (room.phase === 'QUESTION_ACTIVE' || room.phase === 'FINAL_COUNTDOWN') {
         if (room.answers.has(slotIndex)) return; // Premier appui verrouillé !
 
         const reactionSec = Math.max(
@@ -338,7 +574,6 @@ async function bootstrap() {
           player.riveState = 2; // Answered_Waiting
         }
 
-        // Verrouille les boutons de ce joueur sur son smartphone
         socket.emit('controller:state_sync', {
           phase: room.phase,
           redLedMode: 'SOLID_LOCKED',
@@ -353,7 +588,6 @@ async function bootstrap() {
         });
         broadcastRoomState(room.roomCode);
 
-        // Si tous les joueurs connectés ont répondu, on révèle immédiatement !
         if (roomManager.areAllConnectedPlayersAnswered(roomCode)) {
           revealQuestion(roomCode);
         }

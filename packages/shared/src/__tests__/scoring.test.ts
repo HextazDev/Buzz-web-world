@@ -41,13 +41,13 @@ describe('ScoringMath — Moteur Mathématique des Manches (MASTER_RFC §4)', ()
       });
     });
 
-    it('awards +300 pts and deducts up to 300 pts from target on correct answer', () => {
+    it('awards stolen amount (up to 300 pts) from target on correct answer (SCORE-03)', () => {
       expect(ScoringMath.pointStealer(true, 500, 600)).toEqual({
         buzzerDelta: 300,
         targetDelta: -300,
       });
       expect(ScoringMath.pointStealer(true, 500, 120)).toEqual({
-        buzzerDelta: 300,
+        buzzerDelta: 120,
         targetDelta: -120,
       });
       expect(ScoringMath.pointStealer(true, 500)).toEqual({
@@ -143,7 +143,7 @@ describe('ScoringMath — Moteur Mathématique des Manches (MASTER_RFC §4)', ()
     });
   });
 
-  describe('SCORE-08 : Manche 9 — Finale Compte à Rebours (finalCountdownInitialHeights)', () => {
+  describe('SCORE-08 : Manche 9 — Finale Compte à Rebours (finalCountdownInitialHeights & finalCountdownQuestionStep)', () => {
     it('scales heights proportionally between 6.0 s (min) and 14.0 s (max)', () => {
       const heights = ScoringMath.finalCountdownInitialHeights({
         0: 1000,
@@ -172,6 +172,13 @@ describe('ScoringMath — Moteur Mathématique des Manches (MASTER_RFC §4)', ()
 
     it('returns an empty object when given no players', () => {
       expect(ScoringMath.finalCountdownInitialHeights({})).toEqual({});
+    });
+
+    it('applies -1.0s/s drain, +0.5s fastest correct bonus, and -1.5s wrong penalty', () => {
+      expect(ScoringMath.finalCountdownQuestionStep(10.0, 2.0, true, true)).toBe(8.5);
+      expect(ScoringMath.finalCountdownQuestionStep(10.0, 2.0, true, false)).toBe(8.0);
+      expect(ScoringMath.finalCountdownQuestionStep(10.0, 2.0, false, false)).toBe(6.5);
+      expect(ScoringMath.finalCountdownQuestionStep(1.0, 1.5, false, false)).toBe(0);
     });
   });
 });

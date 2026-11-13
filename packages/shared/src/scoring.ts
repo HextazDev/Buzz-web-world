@@ -41,7 +41,7 @@ export const ScoringMath = {
     const stolenAmount =
       targetCurrentScore !== undefined ? Math.min(targetCurrentScore, 300) : 300;
     return {
-      buzzerDelta: 300,
+      buzzerDelta: stolenAmount,
       targetDelta: -stolenAmount,
     };
   },
@@ -146,5 +146,21 @@ export const ScoringMath = {
       heights[Number(slotStr)] = Math.round(t * 100) / 100;
     }
     return heights;
+  },
+
+  /**
+   * Manche 9 : Calcul de la nouvelle hauteur de socle après une question
+   * Descente de -1.0 s/s jusqu'au verrouillage.
+   * Juste : hauteur conservée (+0.5 s au plus rapide). Faux : chute immédiate de -1.5 s. Plancher à 0.0 s.
+   */
+  finalCountdownQuestionStep(
+    currentHeightSec: number,
+    drainSecondsBeforeLock: number,
+    isCorrect: boolean,
+    isFastestCorrect: boolean
+  ): number {
+    const afterDrain = Math.max(0, currentHeightSec - Math.max(0, drainSecondsBeforeLock));
+    const delta = isCorrect ? (isFastestCorrect ? 0.5 : 0) : -1.5;
+    return Math.max(0, Math.round((afterDrain + delta) * 100) / 100);
   },
 };

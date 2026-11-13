@@ -115,6 +115,11 @@ export interface ServerToHostEvents {
     currentRoundIndex: number;
     totalRounds: number;
     currentRoundType?: RoundType;
+    loserPickerSlot?: number | null;
+    loserPickOptions?: Array<{ roundType: RoundType; packTitle: string }>;
+    onTheSpotTargetSlot?: number | null;
+    bombHolderSlot?: number | null;
+    pieTargetCursorSlot?: number | null;
     players: PlayerSlotState[];
   }) => void;
 
