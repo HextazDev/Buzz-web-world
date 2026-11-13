@@ -12,4 +12,5 @@ Bugs et limitations techniques **constatés et non encore corrigés** dans le co
 
 | ID | Domaine | Symptôme visible | Contournement | Edge cases liés | Suivi |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **KI-07** | `Persistance` / Base de Données | Le serveur n'utilise que les questions de démonstration en mémoire (`DEMO_QUESTIONS`) et ne se connecte pas encore à PostgreSQL 16 et MinIO. | Mode démo uniquement jusqu'au branchement des repositories Cloud-First (`InMemory` seedé + `Postgres`). | `PACK-01`, `POOL-01` | [#4](https://github.com/HextazDev/Buzz-web-world/issues/4) |
+| *(Aucun problème bloquant actif — tous les invariants `KI-01` à `KI-07` ont été résolus dans [#1](https://github.com/HextazDev/Buzz-web-world/issues/1), [#3](https://github.com/HextazDev/Buzz-web-world/issues/3) et [#4](https://github.com/HextazDev/Buzz-web-world/issues/4))* | — | — | — | — | — |
+

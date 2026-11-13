@@ -15,6 +15,8 @@ import {
 } from '@buzz/shared';
 import { randomUUID } from 'node:crypto';
 
+import type { QuestionEntity, QuizPackEntity } from '../repositories/interfaces.js';
+
 export interface LoserPickOption {
   roundType: RoundType;
   packTitle: string;
@@ -47,6 +49,8 @@ export interface ActiveRoom {
   onTheSpotTargetSlot: number | null;
   onTheSpotVotes: Map<number, 0 | 1>;
   pointStealTargetOptions: number[];
+  questionPool: QuestionEntity[];
+  packTitlesPool: string[];
   activeWatchdogTimer?: NodeJS.Timeout;
 }
 
@@ -92,6 +96,8 @@ export class RoomManager {
       onTheSpotTargetSlot: null,
       onTheSpotVotes: new Map(),
       pointStealTargetOptions: [],
+      questionPool: [],
+      packTitlesPool: [],
     };
 
     this.rooms.set(roomCode, room);
@@ -101,6 +107,29 @@ export class RoomManager {
   getRoom(roomCode: string): ActiveRoom | undefined {
     if (!roomCode || typeof roomCode !== 'string') return undefined;
     return this.rooms.get(roomCode.trim().toUpperCase());
+  }
+
+  syncRoomQuestionPool(
+    roomCode: string,
+    packs: QuizPackEntity[],
+    questions: QuestionEntity[]
+  ): void {
+    const room = this.getRoom(roomCode);
+    if (!room) return;
+    room.packTitlesPool = packs.map((p) => p.title);
+    room.questionPool = [...questions];
+  }
+
+  getRoomPlayerUserIds(roomCode: string): string[] {
+    const room = this.getRoom(roomCode);
+    if (!room) return [];
+    const ids = new Set<string>();
+    for (const player of room.players.values()) {
+      if (player.userId) {
+        ids.add(player.userId);
+      }
+    }
+    return Array.from(ids);
   }
 
   /**

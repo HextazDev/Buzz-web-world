@@ -10,94 +10,42 @@ import {
   HostReadyForTimerPayloadSchema,
   ROUND_TYPES,
   ScoringMath,
-  type BuzzerColor,
   type ControllerToServerEvents,
   type HostToServerEvents,
-  type QuestionFormat,
   type RoundType,
   type ServerToControllerEvents,
   type ServerToHostEvents,
 } from '@buzz/shared';
+import { createInMemoryRepositories } from './repositories/in-memory.js';
+import type { AppRepositories } from './repositories/interfaces.js';
+import { createPostgresRepositories } from './repositories/postgres.js';
+import { registerAuthRoutes } from './routes/auth.js';
+import { registerPackRoutes } from './routes/packs.js';
 import { RoomManager } from './state/room-machine.js';
 
 const PORT = Number(process.env.PORT ?? 3456);
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? 'http://localhost:5173';
 const ALLOWED_ORIGINS = WEB_ORIGIN.split(',').map((origin) => origin.trim());
 
-interface DemoQuestion {
-  id: string;
-  subTheme: string;
-  format: QuestionFormat;
-  prompt: string;
-  choices: [string, string, string, string];
-  correctIndex: BuzzerColor;
-  presenterIntro: string;
-}
-
-const DEMO_QUESTIONS: DemoQuestion[] = [
-  {
-    id: 'q-demo-1',
-    subTheme: 'Jeux Vidéo Cultes',
-    format: 'TEXT_CLASSIC',
-    prompt: 'Sur quelle console est sorti Buzz! Quiz World en 2009 ?',
-    choices: ['PlayStation 3', 'Nintendo 64', 'Sega Dreamcast', 'Atari 2600'],
-    correctIndex: 0,
-    presenterIntro:
-      'Première question ! Voyons qui a un minimum de culture générale dans ce salon...',
-  },
-  {
-    id: 'q-demo-2',
-    subTheme: 'Culture Web & Tech',
-    format: 'TEXT_CLASSIC',
-    prompt: 'Quelle couleur se trouve tout en haut des 4 boutons de réponse sur votre Buzzer ?',
-    choices: ['Le Bleu', 'Le Vert', 'Le Jaune', 'Le Violet'],
-    correctIndex: 0,
-    presenterIntro:
-      'Ne regardez pas votre téléphone pour tricher... ah bah si, vous avez le droit !',
-  },
-  {
-    id: 'q-demo-3',
-    subTheme: 'Cinéma & Pop Culture',
-    format: 'TEXT_CLASSIC',
-    prompt: 'Dans quel film entend-on la réplique culte : « Le gras, c’est la vie » ?',
-    choices: ['Les Bronzés', 'Kaamelott', 'Astérix & Obélix', 'OSS 117'],
-    correctIndex: 1,
-    presenterIntro: 'Attention, Doigt sur la gâchette : plus vous répondez vite, plus ça paye !',
-  },
-  {
-    id: 'q-demo-4',
-    subTheme: 'Sciences & Espace',
-    format: 'TEXT_CLASSIC',
-    prompt: 'Quelle planète du système solaire est surnommée la Planète Rouge ?',
-    choices: ['Vénus', 'Jupiter', 'Mars', 'Saturne'],
-    correctIndex: 2,
-    presenterIntro: 'Main sur le Buzzer Rouge : le premier qui buzze prend la main !',
-  },
-  {
-    id: 'q-demo-5',
-    subTheme: 'Gastronomie & Tartes',
-    format: 'TEXT_CLASSIC',
-    prompt: 'Quel agrume donne son parfum acidulé à la célèbre tarte meringuée ?',
-    choices: ['Le Citron', 'La Fraise', 'La Pomme', 'La Poire'],
-    correctIndex: 0,
-    presenterIntro: 'L’Entartage : répondez juste au Buzzer Rouge pour viser un adversaire !',
-  },
-  {
-    id: 'q-demo-6',
-    subTheme: 'Histoire & Explosions',
-    format: 'TEXT_CLASSIC',
-    prompt: 'En quelle année a eu lieu la prise de la Bastille ?',
-    choices: ['1515', '1789', '1848', '1914'],
-    correctIndex: 1,
-    presenterIntro: 'Attention à la Bombe : répondez juste pour la passer à votre voisin !',
-  },
-];
-
 async function bootstrap() {
   const app = Fastify({ logger: true });
   await app.register(cors, { origin: ALLOWED_ORIGINS });
 
   const roomManager = new RoomManager();
+
+  // Cloud-First : Persistance PostgreSQL 16 optionnelle (fallback InMemory automatique avec seed de 24 questions si DATABASE_URL est absent)
+  let repos: AppRepositories;
+  if (process.env.DATABASE_URL) {
+    try {
+      repos = await createPostgresRepositories(process.env.DATABASE_URL);
+      app.log.info('[DB] Connected to PostgreSQL 16');
+    } catch (err) {
+      app.log.warn({ err }, '[DB] Failed to connect to PostgreSQL, falling back to InMemoryRepositories');
+      repos = createInMemoryRepositories();
+    }
+  } else {
+    repos = createInMemoryRepositories();
+  }
 
   // Cloud-First : Connexion Redis optionnelle (fallback mémoire automatique si REDIS_URL est absent)
   let redisClient: { set: (...args: unknown[]) => Promise<unknown> } | undefined;
@@ -114,9 +62,13 @@ async function bootstrap() {
     }
   }
 
+  registerAuthRoutes(app, repos);
+  registerPackRoutes(app, repos);
+
   app.get('/health', async () => ({
     status: 'ok',
     service: 'buzz-web-world-server',
+    dbBackend: repos.backend,
     lockBackend: redisClient ? 'redis' : 'in-memory',
   }));
 
@@ -128,6 +80,14 @@ async function bootstrap() {
   >(app.server, {
     cors: { origin: ALLOWED_ORIGINS },
   });
+
+  async function refreshRoomPool(roomCode: string) {
+    const room = roomManager.getRoom(roomCode);
+    if (!room) return;
+    const playerUserIds = roomManager.getRoomPlayerUserIds(roomCode);
+    const pool = await repos.packs.buildRoomQuestionPool(playerUserIds);
+    roomManager.syncRoomQuestionPool(roomCode, pool.packs, pool.questions);
+  }
 
   function syncAllControllers(roomCode: string) {
     const room = roomManager.getRoom(roomCode);
@@ -156,6 +116,8 @@ async function bootstrap() {
       onTheSpotTargetSlot: room.onTheSpotTargetSlot,
       bombHolderSlot: room.bombHolderSlot,
       pieTargetCursorSlot: room.pieTargetCursorSlot,
+      roomPoolPackCount: room.packTitlesPool.length,
+      roomPoolQuestionCount: room.questionPool.length,
       players: Array.from(room.players.values()),
     });
     syncAllControllers(roomCode);
@@ -190,8 +152,8 @@ async function bootstrap() {
 
   function launchQuestion(roomCode: string, qIdx: number, explicitRoundType?: RoundType) {
     const room = roomManager.getRoom(roomCode);
-    if (!room) return;
-    const q = DEMO_QUESTIONS[qIdx % DEMO_QUESTIONS.length];
+    if (!room || room.questionPool.length === 0) return;
+    const q = room.questionPool[qIdx % room.questionPool.length];
     if (!q) return;
 
     const roundType =
@@ -210,7 +172,8 @@ async function bootstrap() {
     io.to(`room:${roomCode}:host`).emit('host:presenter_speak_start', {
       utteranceId: `utt-${Date.now()}`,
       mood: 4,
-      subtitleText: q.presenterIntro,
+      subtitleText:
+        q.presenterIntro ?? `Thème ${q.subTheme} : ouvrez bien les yeux sur l’écran TV !`,
     });
 
     // Anti-Triche strict : correct_index n'est JAMAIS envoyé dans host:question_show
@@ -222,6 +185,7 @@ async function bootstrap() {
       format: q.format,
       prompt: q.prompt,
       choices: q.choices,
+      mediaUrl: q.mediaKey ? repos.media.getPublicUrl(q.mediaKey) : undefined,
       timerDurationMs: 10000,
     });
 
@@ -242,8 +206,9 @@ async function bootstrap() {
       room.activeWatchdogTimer = undefined;
     }
 
+    if (room.questionPool.length === 0) return;
     const qIdx = Math.max(0, room.currentQuestionIndex);
-    const q = DEMO_QUESTIONS[qIdx % DEMO_QUESTIONS.length];
+    const q = room.questionPool[qIdx % room.questionPool.length];
     if (!q) return;
 
     const scoreDeltas: Record<number, number> = {};
@@ -328,7 +293,7 @@ async function bootstrap() {
   }
 
   io.on('connection', (socket) => {
-    socket.on('host:create_room', (rawPayload, ack) => {
+    socket.on('host:create_room', async (rawPayload, ack) => {
       const parsed = HostCreateRoomPayloadSchema.safeParse(rawPayload);
       if (!parsed.success || typeof ack !== 'function') {
         app.log.warn({ err: parsed.error }, '[SEC-01] Rejected invalid host:create_room payload');
@@ -340,6 +305,7 @@ async function bootstrap() {
         parsed.data.format,
         parsed.data.customRoundsCount
       );
+      await refreshRoomPool(room.roomCode);
       socket.data.hostRoomCode = room.roomCode;
       socket.join(`room:${room.roomCode}:host`);
       ack({
@@ -376,7 +342,7 @@ async function bootstrap() {
       startQuestionTimer(roomCode, 10000);
     });
 
-    socket.on('controller:join', (rawPayload) => {
+    socket.on('controller:join', async (rawPayload) => {
       const parsed = ControllerJoinPayloadSchema.safeParse(rawPayload);
       if (!parsed.success) {
         app.log.warn({ err: parsed.error }, '[SEC-01] Rejected invalid controller:join payload');
@@ -391,6 +357,9 @@ async function bootstrap() {
       if (!joined) return;
       const room = roomManager.getRoom(parsed.data.roomCode);
       if (!room) return;
+
+      // POOL-01 : Recalcul dynamique de la Banque du Salon dès qu'un joueur rejoint
+      await refreshRoomPool(room.roomCode);
 
       socket.data.roomCode = room.roomCode;
       socket.data.slotIndex = joined.slotIndex;
@@ -474,7 +443,8 @@ async function bootstrap() {
       if (!room) return;
 
       const qIdx = Math.max(0, room.currentQuestionIndex);
-      const currentQ = DEMO_QUESTIONS[qIdx % DEMO_QUESTIONS.length];
+      const currentQ =
+        room.questionPool.length > 0 ? room.questionPool[qIdx % room.questionPool.length] : undefined;
 
       // 1. Choix du Perdant (LOSER_PICK_ROUND)
       if (room.phase === 'LOSER_PICK_ROUND') {

@@ -104,3 +104,35 @@ export const ControllerPressColorPayloadSchema = z.object({
 });
 
 export const RoundTypeSchema = z.enum(ROUND_TYPES);
+
+export const AuthRegisterSchema = z.object({
+  username: z
+    .string()
+    .trim()
+    .min(3)
+    .max(24)
+    .regex(/^[a-zA-Z0-9_-]+$/, 'Le pseudo ne peut contenir que des lettres, chiffres, _ ou -'),
+  email: z.string().trim().email().max(255),
+  password: z.string().min(8).max(128),
+  avatarPreset: z.enum(AVATAR_PRESETS).default('rocker'),
+  avatarColor: z
+    .string()
+    .regex(/^#[0-9A-Fa-f]{6}$/)
+    .default('#0066FF'),
+  buzzerSound: z.enum(BUZZER_SOUNDS).default('classic_tv'),
+});
+export type AuthRegisterPayload = z.infer<typeof AuthRegisterSchema>;
+
+export const AuthLoginSchema = z.object({
+  email: z.string().trim().email().max(255),
+  password: z.string().min(1).max(128),
+});
+export type AuthLoginPayload = z.infer<typeof AuthLoginSchema>;
+
+export const QuizPackRateSchema = z.object({
+  rating: z.number().int().min(1).max(5),
+});
+export type QuizPackRatePayload = z.infer<typeof QuizPackRateSchema>;
+export type QuizPackCreatePayload = z.infer<typeof QuizPackCreateSchema>;
+export type QuestionCreatePayload = z.infer<typeof QuestionCreateSchema>;
+

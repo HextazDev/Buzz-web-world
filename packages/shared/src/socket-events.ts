@@ -120,6 +120,8 @@ export interface ServerToHostEvents {
     onTheSpotTargetSlot?: number | null;
     bombHolderSlot?: number | null;
     pieTargetCursorSlot?: number | null;
+    roomPoolPackCount?: number;
+    roomPoolQuestionCount?: number;
     players: PlayerSlotState[];
   }) => void;
 
