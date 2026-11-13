@@ -16,16 +16,24 @@ import {
   type ServerToControllerEvents,
   type ServerToHostEvents,
 } from '@buzz/shared';
+import { resolve } from 'node:path';
 import { createInMemoryRepositories } from './repositories/in-memory.js';
 import type { AppRepositories } from './repositories/interfaces.js';
 import { createPostgresRepositories } from './repositories/postgres.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerPackRoutes } from './routes/packs.js';
+import {
+  buildCloudHealthPayload,
+  registerOptionalStaticSpaServing,
+  resolvePublicJoinUrl,
+  SOCKET_IO_CLOUD_HEARTBEAT,
+} from './services/cloudDeploymentConfig.js';
 import { presenterAiService } from './services/presenterAiService.js';
 import { RoomManager } from './state/room-machine.js';
 
 const PORT = Number(process.env.PORT ?? 3456);
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? 'http://localhost:5173';
+const PUBLIC_WEB_URL = process.env.PUBLIC_WEB_URL;
 const ALLOWED_ORIGINS = WEB_ORIGIN.split(',').map((origin) => origin.trim());
 
 async function bootstrap() {
@@ -66,12 +74,14 @@ async function bootstrap() {
   registerAuthRoutes(app, repos);
   registerPackRoutes(app, repos);
 
-  app.get('/health', async () => ({
-    status: 'ok',
-    service: 'buzz-web-world-server',
-    dbBackend: repos.backend,
-    lockBackend: redisClient ? 'redis' : 'in-memory',
-  }));
+  app.get('/health', async () =>
+    buildCloudHealthPayload(roomManager, repos, Boolean(redisClient))
+  );
+
+  if (process.env.SERVE_STATIC_WEB === 'true' || process.env.NODE_ENV === 'production') {
+    const webDistDir = resolve(process.cwd(), '../web/dist');
+    registerOptionalStaticSpaServing(app, webDistDir);
+  }
 
   await app.ready();
 
@@ -80,6 +90,8 @@ async function bootstrap() {
     ServerToControllerEvents & ServerToHostEvents
   >(app.server, {
     cors: { origin: ALLOWED_ORIGINS },
+    pingInterval: SOCKET_IO_CLOUD_HEARTBEAT.pingInterval,
+    pingTimeout: SOCKET_IO_CLOUD_HEARTBEAT.pingTimeout,
   });
 
   async function refreshRoomPool(roomCode: string) {
@@ -386,7 +398,11 @@ async function bootstrap() {
       socket.join(`room:${room.roomCode}:host`);
       ack({
         roomCode: room.roomCode,
-        joinUrl: `${ALLOWED_ORIGINS[0] ?? WEB_ORIGIN}/controller?room=${room.roomCode}`,
+        joinUrl: resolvePublicJoinUrl(
+          room.roomCode,
+          PUBLIC_WEB_URL,
+          ALLOWED_ORIGINS[0] ?? WEB_ORIGIN
+        ),
       });
       broadcastRoomState(room.roomCode);
     });
