@@ -1,21 +1,39 @@
 <template>
-  <div class="w-screen h-screen bg-gradient-to-b from-indigo-950 via-slate-950 to-black text-white flex flex-col justify-between p-6 overflow-hidden">
-    <!-- Écran d'accueil : Déverrouillage AudioContext obligatoire sur la TV -->
+  <div class="w-screen h-screen bg-gradient-to-b from-indigo-950 via-slate-950 to-black text-white flex flex-col justify-between p-5 overflow-hidden">
+    <!-- Écran d'accueil : Déverrouillage AudioContext obligatoire sur la TV (AUDIO-01) -->
     <div
-      v-if="!isShowStarted"
+      v-if="!host.isShowStarted"
       class="flex-1 flex flex-col items-center justify-center gap-6"
     >
       <div class="px-4 py-1.5 rounded-full bg-amber-500/10 border border-amber-400/30 text-amber-300 text-xs font-bold uppercase tracking-widest">
-        Plateau TV 1080p/4K • Temps Réel Socket.io
+        Plateau TV 1080p/4K • Rive 2.5D • Cloud-First Socket.io
       </div>
       <h1 class="text-6xl font-black tracking-tight text-amber-400 drop-shadow-lg">
         BUZZ! WEB WORLD
       </h1>
       <p class="text-slate-300 text-lg max-w-xl text-center">
-        Transformez votre téléviseur en plateau de jeu télévisé et utilisez vos smartphones comme buzzers.
+        Transformez votre téléviseur en plateau de jeu télévisé et utilisez vos smartphones en 4G/5G ou Wi-Fi comme buzzers.
       </p>
+
+      <!-- Choix de la durée de partie (MASTER_RFC §4.0) -->
+      <div class="flex items-center gap-3">
+        <button
+          v-for="fmt in formatOptions"
+          :key="fmt.key"
+          @click="selectedFormat = fmt.key"
+          class="px-4 py-2 rounded-xl font-bold text-xs uppercase tracking-wider border-2 transition cursor-pointer"
+          :class="
+            selectedFormat === fmt.key
+              ? 'bg-amber-400 text-black border-amber-300'
+              : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-slate-500'
+          "
+        >
+          {{ fmt.label }}
+        </button>
+      </div>
+
       <button
-        @click="initializeTvShow"
+        @click="host.initializeTvShow(selectedFormat)"
         class="px-8 py-5 rounded-2xl bg-amber-500 hover:bg-amber-400 text-black font-black text-xl shadow-2xl transition cursor-pointer"
       >
         OUVRIR LE PLATEAU TV (ACTIVER AUDIO & SHOW)
@@ -24,284 +42,126 @@
 
     <!-- Plateau TV Maître -->
     <template v-else>
-      <!-- Bandeau Supérieur : Salon, Lien Contrôleur & Présentateur IA -->
-      <header class="flex items-center justify-between bg-slate-900/90 border border-slate-800 rounded-2xl p-4 gap-4">
-        <div class="flex items-center gap-6">
-          <div>
-            <div class="text-[11px] uppercase tracking-widest text-slate-400">CODE SALON</div>
-            <div class="text-4xl font-black text-amber-400 tracking-widest">{{ roomCode }}</div>
-          </div>
-          <div class="border-l border-slate-800 pl-6">
-            <div class="text-xs text-slate-400">Ouvrir un Buzzer Smartphone de test :</div>
-            <a
-              :href="joinUrl"
-              target="_blank"
-              class="text-sm font-mono text-amber-300 underline hover:text-amber-200"
-            >
-              {{ joinUrl }} ↗
-            </a>
-          </div>
-        </div>
+      <!-- Bandeau Supérieur : QR Code Salon, Présentateur Rive 2.5D & Contrôle Hôte -->
+      <header class="flex items-center justify-between bg-slate-900/90 border border-slate-800 rounded-2xl p-3 gap-4">
+        <RoomQrCode :room-code="host.roomCode" :join-url="host.joinUrl" :size="68" />
 
-        <!-- Présentateur IA & Lip-Sync 60 FPS -->
-        <div class="flex items-center gap-4 bg-slate-950 px-5 py-3 rounded-xl border border-slate-800 max-w-xl">
-          <div class="text-right">
-            <div class="text-xs font-bold text-indigo-400 uppercase tracking-wider">
-              Présentateur IA • Lip-Sync 60 FPS
+        <RivePresenter
+          :subtitle-text="host.presenterSubtitle"
+          :mood="host.presenterMood"
+          :mouth-open="host.mouthOpen"
+          :is-speaking="host.isPresenterSpeaking"
+        />
+
+        <div class="flex items-center gap-3 shrink-0">
+          <div class="text-right hidden xl:block">
+            <div class="text-[10px] uppercase tracking-widest text-slate-400">BANQUE DU SALON</div>
+            <div class="text-xs font-mono text-emerald-300 font-bold">
+              {{ host.roomPoolPackCount }} packs • {{ host.roomPoolQuestionCount }} questions
             </div>
-            <div class="text-sm text-slate-200 italic">« {{ presenterSubtitle }} »</div>
           </div>
-          <div class="w-12 h-12 rounded-full bg-indigo-600/30 border-2 border-indigo-400 flex items-center justify-center shrink-0">
-            <div
-              class="w-6 bg-amber-400 rounded-full transition-all duration-75"
-              :style="{ height: `${Math.max(6, Math.round(mouthOpen * 36))}px` }"
-            />
-          </div>
-        </div>
 
-        <button
-          @click="startOrNextQuestion"
-          class="px-5 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-black text-sm uppercase tracking-wider shadow-lg cursor-pointer shrink-0"
-        >
-          {{ currentQuestion ? 'Question Suivante ▶' : 'Lancer Manche 1 ▶' }}
-        </button>
+          <button
+            @click="host.startOrNextQuestion()"
+            class="px-5 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-black text-sm uppercase tracking-wider shadow-lg cursor-pointer shrink-0"
+          >
+            {{ host.currentQuestion ? 'Question Suivante ▶' : 'Lancer la Partie ▶' }}
+          </button>
+        </div>
       </header>
 
-      <!-- Scène Centrale : Lobby ou Question Active -->
-      <main class="flex-1 flex flex-col items-center justify-center my-4 bg-slate-900/50 border-2 border-slate-800/80 rounded-3xl p-8 relative">
+      <!-- Scène Centrale : Choix du Perdant, Question Active ou Lobby -->
+      <main class="flex-1 flex flex-col items-center justify-center my-3 bg-slate-900/50 border-2 border-slate-800/80 rounded-3xl p-6 relative overflow-hidden">
         <div class="text-xs font-bold uppercase tracking-widest text-indigo-400 mb-2">
-          PHASE : {{ currentPhase }}
+          PHASE : {{ host.currentPhase }}
+          <span v-if="host.currentRoundIndex > 0">
+            • MANCHE {{ host.currentRoundIndex }} / {{ host.totalRounds }}
+          </span>
         </div>
 
-        <!-- Mode Question Active ou Révélation -->
-        <div v-if="currentQuestion" class="w-full max-w-4xl flex flex-col items-center gap-6">
-          <div class="px-4 py-1 rounded-full bg-indigo-500/20 border border-indigo-400/40 text-indigo-300 text-sm font-bold">
-            Thème : {{ currentQuestion.subTheme }}
-          </div>
-
-          <h2 class="text-3xl md:text-4xl font-black text-center leading-tight">
-            {{ currentQuestion.prompt }}
+        <!-- Phase Spéciale : Choix du Perdant (LOSER_PICK_ROUND) -->
+        <div
+          v-if="host.currentPhase === 'LOSER_PICK_ROUND'"
+          class="w-full max-w-3xl flex flex-col items-center gap-4 text-center"
+        >
+          <h2 class="text-3xl font-black text-amber-400">
+            👑 LE CHOIX DU PERDANT !
           </h2>
-
-          <!-- Grille des 4 couleurs officielles (Bleu, Orange, Vert, Jaune) -->
-          <div class="grid grid-cols-2 gap-4 w-full mt-2">
+          <p class="text-slate-300 text-sm">
+            Le joueur au Pupitre {{ (host.loserPickerSlot ?? 0) + 1 }} choisit la prochaine épreuve sur son Buzzer coloré :
+          </p>
+          <div class="grid grid-cols-2 gap-3 w-full">
             <div
-              v-for="(choice, idx) in currentQuestion.choices"
+              v-for="(opt, idx) in host.loserPickOptions"
               :key="idx"
-              class="p-5 rounded-2xl font-black text-xl flex items-center gap-4 border-4 transition-all"
-              :style="{
-                backgroundColor: BUZZER_COLORS[idx]!.hex,
-                opacity:
-                  revealedCorrectIndex === null || revealedCorrectIndex === idx ? 1 : 0.25,
-                transform: revealedCorrectIndex === idx ? 'scale(1.03)' : 'scale(1)',
-              }"
-              :class="revealedCorrectIndex === idx ? 'border-white shadow-[0_0_30px_#ffffff]' : 'border-black/30'"
+              class="p-4 rounded-2xl font-black text-lg flex items-center gap-3 border-2 border-white/30"
+              :style="{ backgroundColor: BUZZER_COLORS[idx]?.hex ?? '#0066FF' }"
             >
-              <span class="w-8 h-8 rounded-full bg-black/30 flex items-center justify-center text-sm">
-                {{ idx + 1 }}
-              </span>
-              <span class="drop-shadow">{{ choice }}</span>
+              <span class="px-2.5 py-1 rounded-lg bg-black/30 text-xs">{{ idx + 1 }}</span>
+              <span>{{ opt.roundType }} — {{ opt.packTitle }}</span>
             </div>
           </div>
         </div>
 
-        <!-- Mode Lobby : Attente des joueurs -->
-        <div v-else class="text-center space-y-3">
-          <h2 class="text-4xl font-black">
-            Scannez ou cliquez sur le lien pour rejoindre ({{ players.length }} / 8 pupitres)
-          </h2>
-          <p class="text-slate-400">
-            Appuyez sur le <span class="text-red-400 font-bold">Gros Bouton Rouge</span> de votre smartphone pour tester votre Buzzer et provoquer le salon !
-          </p>
+        <!-- Mode Question Active ou Révélation (4 Formats supportés) -->
+        <QuestionStage
+          v-else-if="host.currentQuestion"
+          :question="host.currentQuestion"
+          :current-round-type="host.currentRoundType"
+          :revealed-correct-index="host.revealedCorrectIndex"
+        />
+
+        <!-- Mode Lobby : Attente des joueurs avec Grand QR Code -->
+        <div v-else class="flex flex-col items-center text-center gap-5">
+          <RoomQrCode :room-code="host.roomCode" :join-url="host.joinUrl" :size="132" />
+          <div class="space-y-2">
+            <h2 class="text-3xl md:text-4xl font-black">
+              Scannez le QR Code pour rejoindre ({{ host.players.length }} / 8 pupitres)
+            </h2>
+            <p class="text-slate-400 max-w-2xl">
+              Appuyez sur le <span class="text-red-400 font-bold">Gros Bouton Rouge</span> de votre smartphone pour tester votre Buzzer parmi les 12 sons disponibles !
+            </p>
+          </div>
         </div>
       </main>
 
-      <!-- Rangée des 8 Pupitres Joueurs -->
+      <!-- Rangée des 8 Pupitres Joueurs Rive 2.5D -->
       <footer class="grid grid-cols-8 gap-3">
-        <div
+        <RiveAvatarSlot
           v-for="slot in 8"
           :key="slot - 1"
-          class="h-36 rounded-2xl border-2 flex flex-col items-center justify-between p-3 transition-all duration-150"
-          :class="[
-            getPlayerAtSlot(slot - 1)
-              ? 'bg-slate-900 border-amber-400/80 shadow-lg'
-              : 'bg-slate-950/50 border-slate-800/60 opacity-40',
-            flashingSlots[slot - 1] ? 'scale-105 ring-4 ring-red-500 bg-red-950/60' : '',
-          ]"
-        >
-          <div class="text-[11px] font-bold text-slate-400">PUPITRE {{ slot }}</div>
-          <div v-if="getPlayerAtSlot(slot - 1)" class="text-center">
-            <div class="font-black text-base truncate max-w-[110px]">
-              {{ getPlayerAtSlot(slot - 1)?.displayName }}
-            </div>
-            <div class="text-[11px] text-amber-300 uppercase">
-              {{ riveStateLabel(getPlayerAtSlot(slot - 1)?.riveState ?? 0) }}
-            </div>
-          </div>
-          <div v-else class="text-xs text-slate-600">Libre</div>
-          <div class="font-mono font-bold text-sm text-white">
-            {{ getPlayerAtSlot(slot - 1)?.score ?? 0 }} PTS
-          </div>
-        </div>
+          :slot-index="slot - 1"
+          :player="host.getPlayerAtSlot(slot - 1)"
+          :is-flashing="host.flashingSlots[slot - 1]"
+          :is-targeted-by-pie="host.pieTargetCursorSlot === slot - 1"
+          :is-bomb-holder="host.bombHolderSlot === slot - 1"
+          :active-trigger="host.lastAvatarTrigger[slot - 1]"
+          :score-delta="host.lastScoreDeltas[slot - 1]"
+        />
       </footer>
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onUnmounted, reactive, ref } from 'vue';
-import { io, type Socket } from 'socket.io-client';
-import {
-  BUZZER_COLORS,
-  type BuzzerColor,
-  type HostToServerEvents,
-  type PlayerSlotState,
-  type RoomPhase,
-  type ServerToHostEvents,
-} from '@buzz/shared';
+import { onUnmounted, ref } from 'vue';
+import { BUZZER_COLORS } from '@buzz/shared';
+import QuestionStage from '../components/QuestionStage.vue';
+import RiveAvatarSlot from '../components/RiveAvatarSlot.vue';
+import RivePresenter from '../components/RivePresenter.vue';
+import RoomQrCode from '../components/RoomQrCode.vue';
+import { useHostStore } from '../stores/useHostStore.js';
 
-const isShowStarted = ref(false);
-const roomCode = ref('----');
-const joinUrl = ref('');
-const currentPhase = ref<RoomPhase>('LOBBY');
-const players = ref<PlayerSlotState[]>([]);
-const presenterSubtitle = ref('Bienvenue sur le plateau de Buzz! Web World !');
-const mouthOpen = ref(0);
-const flashingSlots = reactive<Record<number, boolean>>({});
+const host = useHostStore();
+const selectedFormat = ref<'SHORT' | 'NORMAL' | 'LONG'>('NORMAL');
 
-const currentQuestion = ref<{
-  questionId: string;
-  subTheme: string;
-  prompt: string;
-  choices: [string, string, string, string];
-} | null>(null);
-const revealedCorrectIndex = ref<BuzzerColor | null>(null);
-
-let socket: Socket<ServerToHostEvents, HostToServerEvents> | null = null;
-let audioCtx: AudioContext | null = null;
-let analyserNode: AnalyserNode | null = null;
-let lipSyncRafId: number | null = null;
-
-function getPlayerAtSlot(slotIndex: number): PlayerSlotState | undefined {
-  return players.value.find((p) => p.slotIndex === slotIndex);
-}
-
-function riveStateLabel(state: number): string {
-  const labels: Record<number, string> = {
-    0: 'Prêt',
-    1: 'Réfléchit...',
-    2: 'Verrouillé !',
-    3: 'BUZZ !',
-    4: 'Gagné ! 🎉',
-    5: 'Raté ! 💀',
-    6: 'TAUNT ! 😜',
-  };
-  return labels[state] ?? 'Prêt';
-}
-
-/**
- * Synthétise un vrai son de Buzzer TV + fait bouger la bouche du présentateur via AnalyserNode
- */
-function playSynthesizedBuzzer(slotIndex: number) {
-  if (!audioCtx || !analyserNode) return;
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  const freqs = [220, 277, 330, 392, 440, 523, 587, 659];
-  osc.type = 'sawtooth';
-  osc.frequency.setValueAtTime(freqs[slotIndex % freqs.length]!, audioCtx.currentTime);
-  gain.gain.setValueAtTime(0.25, audioCtx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.35);
-
-  osc.connect(gain);
-  gain.connect(analyserNode);
-  osc.start();
-  osc.stop(audioCtx.currentTime + 0.35);
-}
-
-function startLipSyncLoop() {
-  if (!analyserNode) return;
-  const dataArray = new Uint8Array(analyserNode.frequencyBinCount);
-
-  const updateMouth = () => {
-    if (analyserNode) {
-      analyserNode.getByteTimeDomainData(dataArray);
-      let sumSquares = 0;
-      for (let i = 0; i < dataArray.length; i++) {
-        const normalized = (dataArray[i]! - 128) / 128;
-        sumSquares += normalized * normalized;
-      }
-      const rms = Math.sqrt(sumSquares / dataArray.length);
-      mouthOpen.value = Math.min(1.0, rms * 4.5);
-    }
-    lipSyncRafId = requestAnimationFrame(updateMouth);
-  };
-
-  lipSyncRafId = requestAnimationFrame(updateMouth);
-}
-
-async function initializeTvShow() {
-  audioCtx = new AudioContext({ sampleRate: 24000 });
-  await audioCtx.resume();
-  analyserNode = audioCtx.createAnalyser();
-  analyserNode.fftSize = 256;
-  analyserNode.connect(audioCtx.destination);
-  startLipSyncLoop();
-
-  isShowStarted.value = true;
-
-  const serverUrl = import.meta.env.VITE_SERVER_URL || 'http://localhost:3456';
-  socket = io(serverUrl);
-
-  socket.on('connect', () => {
-    socket?.emit('host:create_room', { format: 'NORMAL' }, (res) => {
-      roomCode.value = res.roomCode;
-      joinUrl.value = res.joinUrl;
-    });
-  });
-
-  socket.on('host:room_state', (state) => {
-    currentPhase.value = state.phase;
-    players.value = state.players;
-  });
-
-  socket.on('host:question_show', (q) => {
-    revealedCorrectIndex.value = null;
-    currentQuestion.value = {
-      questionId: q.questionId,
-      subTheme: q.subTheme,
-      prompt: q.prompt,
-      choices: q.choices,
-    };
-  });
-
-  socket.on('host:question_reveal', (rev) => {
-    revealedCorrectIndex.value = rev.correctIndex;
-    playSynthesizedBuzzer(rev.correctIndex);
-  });
-
-  socket.on('host:avatar_trigger', ({ slotIndex, playBuzzerSound }) => {
-    flashingSlots[slotIndex] = true;
-    setTimeout(() => {
-      flashingSlots[slotIndex] = false;
-    }, 400);
-    if (playBuzzerSound) {
-      playSynthesizedBuzzer(slotIndex);
-    }
-  });
-
-  socket.on('host:presenter_speak_start', ({ subtitleText }) => {
-    presenterSubtitle.value = subtitleText;
-    playSynthesizedBuzzer(2);
-  });
-}
-
-function startOrNextQuestion() {
-  socket?.emit('host:start_game');
-}
+const formatOptions: Array<{ key: 'SHORT' | 'NORMAL' | 'LONG'; label: string }> = [
+  { key: 'SHORT', label: '⚡ Partie Courte (3 manches)' },
+  { key: 'NORMAL', label: '🎬 Partie Normale (5 manches)' },
+  { key: 'LONG', label: '🏆 Partie Longue (8 manches)' },
+];
 
 onUnmounted(() => {
-  if (lipSyncRafId) cancelAnimationFrame(lipSyncRafId);
-  audioCtx?.close();
-  socket?.disconnect();
+  host.cleanup();
 });
 </script>

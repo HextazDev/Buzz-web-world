@@ -65,6 +65,8 @@ export interface ControllerToServerEvents {
     roomCode: string;
     userId?: string;
     guestName?: string;
+    avatarPreset?: string;
+    buzzerSound?: string;
     reconnectToken?: string;
   }) => void;
   'controller:press_red': (p: { clientSentAt: number }) => void;

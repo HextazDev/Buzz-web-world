@@ -52,3 +52,14 @@ Ce document recense l'ensemble des **invariants métier, mathématiques, concurr
 | **CLOUD-01** | `createInMemoryRepositories` | Démarrage du serveur ou exécution des tests sans conteneur Docker local (`DATABASE_URL` absent). | Initialisation immédiate en mémoire pré-peuplée par `OFFICIAL_SEED_PACKS` ($\ge 2$ packs officiels de $\ge 12$ questions chacun). | ✅ `repositories-and-packs.test.ts` ([#4](https://github.com/HextazDev/Buzz-web-world/issues/4)) |
 | **RIV-01** | Table `friend_rivalries` (`001_init_schema.sql`) | Enregistrement d'une rivalité entre deux amis $A$ et $B$. | Contrainte SQL `CHECK (user_a_id < user_b_id)` garantissant l'unicité du couple bidirectionnel sans doublon inverse $(B, A)$. | 🛡️ `001_init_schema.sql:34` (Suivi service : [#7](https://github.com/HextazDev/Buzz-web-world/issues/7)) |
 
+---
+
+## 4. 📺 Plateau TV (`/host`), Rive 2.5D, Audio & Contrôleur Mobile (`/controller`)
+
+| ID | Composant | Scénario aux Frontières | Comportement Attendu | Couverture |
+| :--- | :--- | :--- | :--- | :--- |
+| **AUDIO-01** | `StudioSoundManager` (`soundManager.ts`) | Politique Autoplay des navigateurs TV/Desktop bloquant l'`AudioContext` et `Howler.ctx` au chargement, ou absence de fichier audio externe. | Déverrouillage explicite sur geste utilisateur initial (`OUVRIR LE PLATEAU TV`) + 12 profils acoustiques distincts (`BUZZER_SOUND_PROFILES`) synthétisés sans dépendance externe. | ✅ `stores-and-audio.test.ts` ([#5](https://github.com/HextazDev/Buzz-web-world/issues/5)) |
+| **RIVE-01** | `RivePresenter.vue` & `RiveAvatarSlot.vue` | Démontage des vues ou reconnexion multiple des 8 pupitres Rive (`@rive-app/canvas`). | Appel systématique à `riveInstance?.cleanup()` et `cancelAnimationFrame` dans `onUnmounted` pour éviter toute fuite mémoire WebGL/Canvas. | 🛡️ `RivePresenter.vue`, `RiveAvatarSlot.vue` ([#5](https://github.com/HextazDev/Buzz-web-world/issues/5)) |
+| **CTRL-01** | `useControllerStore.ts` & `ControllerView.vue` | Inspection de l'état Pinia ou du DOM sur smartphone pendant une question. | **Zéro texte de question ni d'intitulé de réponse** sur `/controller` (les yeux restent rivés sur la TV). | ✅ `stores-and-audio.test.ts` ([#5](https://github.com/HextazDev/Buzz-web-world/issues/5)) |
+
+
