@@ -21,6 +21,7 @@ import type { AppRepositories } from './repositories/interfaces.js';
 import { createPostgresRepositories } from './repositories/postgres.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerPackRoutes } from './routes/packs.js';
+import { presenterAiService } from './services/presenterAiService.js';
 import { RoomManager } from './state/room-machine.js';
 
 const PORT = Number(process.env.PORT ?? 3456);
@@ -150,6 +151,30 @@ async function bootstrap() {
     }, 450);
   }
 
+  function emitPresenterToHost(
+    roomCode: string,
+    event: 'host:presenter_speak_start' | 'host:presenter_audio_chunk' | 'host:presenter_speak_end',
+    payload: unknown
+  ) {
+    const target = io.to(`room:${roomCode}:host`);
+    if (event === 'host:presenter_speak_start') {
+      target.emit(
+        'host:presenter_speak_start',
+        payload as Parameters<ServerToHostEvents['host:presenter_speak_start']>[0]
+      );
+    } else if (event === 'host:presenter_audio_chunk') {
+      target.emit(
+        'host:presenter_audio_chunk',
+        payload as Parameters<ServerToHostEvents['host:presenter_audio_chunk']>[0]
+      );
+    } else {
+      target.emit(
+        'host:presenter_speak_end',
+        payload as Parameters<ServerToHostEvents['host:presenter_speak_end']>[0]
+      );
+    }
+  }
+
   function launchQuestion(roomCode: string, qIdx: number, explicitRoundType?: RoundType) {
     const room = roomManager.getRoom(roomCode);
     if (!room || room.questionPool.length === 0) return;
@@ -169,12 +194,24 @@ async function bootstrap() {
 
     roomManager.prepareQuestion(roomCode, roundType, qIdx);
 
-    io.to(`room:${roomCode}:host`).emit('host:presenter_speak_start', {
-      utteranceId: `utt-${Date.now()}`,
-      mood: 4,
-      subtitleText:
-        q.presenterIntro ?? `Thème ${q.subTheme} : ouvrez bien les yeux sur l’écran TV !`,
-    });
+    const sortedPlayers = Array.from(room.players.values()).sort((a, b) => b.score - a.score);
+    const leaderName = sortedPlayers[0]?.displayName;
+    const lastPlaceName = sortedPlayers[sortedPlayers.length - 1]?.displayName;
+
+    void presenterAiService.streamUtterance(
+      (event, payload) => {
+        emitPresenterToHost(roomCode, event, payload);
+      },
+      {
+        kind: 'QUESTION_INTRO',
+        subTheme: q.subTheme,
+        roundType,
+        leaderName,
+        lastPlaceName,
+        fallbackText: q.presenterIntro,
+        ttsCacheKey: q.ttsCacheKey ?? `q-intro-${q.id}`,
+      }
+    );
 
     // Anti-Triche strict : correct_index n'est JAMAIS envoyé dans host:question_show
     io.to(`room:${roomCode}:host`).emit('host:question_show', {
@@ -278,16 +315,18 @@ async function bootstrap() {
     const winners = Array.from(room.players.values()).filter(
       (p) => (scoreDeltas[p.slotIndex] ?? 0) > 0
     );
-    const roast =
-      winners.length === 0
-        ? 'Zéro pointé dans tout le salon ! Même ma grand-mère aurait buzzé Bleu...'
-        : `Bien joué ${winners.map((w) => w.displayName).join(', ')} ! Les autres, réveillez-vous !`;
+    const sortedAfter = Array.from(room.players.values()).sort((a, b) => a.score - b.score);
 
-    io.to(`room:${roomCode}:host`).emit('host:presenter_speak_start', {
-      utteranceId: `utt-rev-${Date.now()}`,
-      mood: winners.length === 0 ? 1 : 4,
-      subtitleText: roast,
-    });
+    void presenterAiService.streamUtterance(
+      (event, payload) => {
+        emitPresenterToHost(roomCode, event, payload);
+      },
+      {
+        kind: 'QUESTION_REVEAL',
+        winnersNames: winners.map((w) => w.displayName),
+        lastPlaceName: sortedAfter[0]?.displayName,
+      }
+    );
 
     broadcastRoomState(roomCode);
   }

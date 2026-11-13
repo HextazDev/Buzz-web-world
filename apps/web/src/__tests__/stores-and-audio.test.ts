@@ -1,11 +1,12 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { AVATAR_PRESETS, BUZZER_SOUNDS } from '@buzz/shared';
+import { decodePcm16Base64ToFloat32 } from '../services/pcmStreamPlayer.js';
 import { BUZZER_SOUND_PROFILES, generateQrMatrix } from '../services/soundManager.js';
 import { useControllerStore } from '../stores/useControllerStore.js';
 import { useHostStore } from '../stores/useHostStore.js';
 
-describe('Pinia Stores (Host & Controller), Sound Profiles, and QR Matrix (#5)', () => {
+describe('Pinia Stores (Host & Controller), Sound Profiles, QR Matrix & PCM 24kHz (#5, #6)', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
   });
@@ -57,7 +58,7 @@ describe('Pinia Stores (Host & Controller), Sound Profiles, and QR Matrix (#5)',
           displayName: 'Nolhan',
           avatarPreset: 'rocker',
           avatarColor: '#0066FF',
-          buzzerSound: 'laser_zap',
+          buzzerSound: 'laser',
           score: 500,
           isConnected: true,
           riveState: 0,
@@ -105,4 +106,18 @@ describe('Pinia Stores (Host & Controller), Sound Profiles, and QR Matrix (#5)',
     expect(matrix[0]?.[20]).toBe(true);
     expect(matrix[20]?.[0]).toBe(true);
   });
+
+  it('[TTS-01] decodes 16-bit Little-Endian PCM base64 into normalized Float32Array samples', () => {
+    const raw = Buffer.alloc(6);
+    raw.writeInt16LE(0, 0);
+    raw.writeInt16LE(16384, 2); // ~ +0.5
+    raw.writeInt16LE(-16384, 4); // ~ -0.5
+
+    const floats = decodePcm16Base64ToFloat32(raw.toString('base64'));
+    expect(floats.length).toBe(3);
+    expect(floats[0]).toBeCloseTo(0, 4);
+    expect(floats[1]).toBeCloseTo(0.5, 2);
+    expect(floats[2]).toBeCloseTo(-0.5, 2);
+  });
 });
+

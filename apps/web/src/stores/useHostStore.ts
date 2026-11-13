@@ -11,6 +11,7 @@ import type {
   RoundType,
   ServerToHostEvents,
 } from '@buzz/shared';
+import { pcmStreamPlayer } from '../services/pcmStreamPlayer.js';
 import { soundManager } from '../services/soundManager.js';
 
 export interface ActiveHostQuestion {
@@ -173,18 +174,27 @@ export const useHostStore = defineStore('host', () => {
       pieTargetCursorSlot.value = currentTargetSlot;
     });
 
-    socket.on('host:presenter_speak_start', ({ mood, subtitleText }) => {
+    socket.on('host:presenter_speak_start', ({ utteranceId, mood, subtitleText }) => {
       presenterMood.value = mood;
       presenterSubtitle.value = subtitleText;
       isPresenterSpeaking.value = true;
-      soundManager.playBuzzerSound('classic_tv', 2);
-      setTimeout(() => {
-        isPresenterSpeaking.value = false;
-      }, 1200);
+      pcmStreamPlayer.startUtterance(utteranceId);
     });
 
-    socket.on('host:presenter_speak_end', () => {
-      isPresenterSpeaking.value = false;
+    socket.on('host:presenter_audio_chunk', ({ utteranceId, pcm24kBase64 }) => {
+      pcmStreamPlayer.enqueueChunk(utteranceId, pcm24kBase64);
+    });
+
+    socket.on('host:presenter_speak_end', ({ utteranceId }) => {
+      pcmStreamPlayer.finishUtterance(utteranceId, () => {
+        isPresenterSpeaking.value = false;
+        if (currentQuestion.value) {
+          socket?.emit('host:ready_for_timer', {
+            phase: currentPhase.value,
+            questionId: currentQuestion.value.questionId,
+          });
+        }
+      });
     });
   }
 
@@ -197,6 +207,7 @@ export const useHostStore = defineStore('host', () => {
       cancelAnimationFrame(lipSyncRafId);
       lipSyncRafId = null;
     }
+    pcmStreamPlayer.reset();
     soundManager.close();
     socket?.disconnect();
     socket = null;
