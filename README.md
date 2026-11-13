@@ -68,25 +68,18 @@ Buzz-web-world/
 
 ### Prérequis
 - **Node.js** 22+ (ou 24 LTS)
-- **Docker & Docker Compose** (pour PostgreSQL 16, Redis 7 et MinIO)
+- **Docker & Docker Compose** *(Optionnel en dev/test grâce au mode **Cloud-First In-Memory**, utilisé uniquement pour tester PostgreSQL 16, Redis 7 et MinIO localement)*
 
 ### 1. Installer les dépendances
 ```bash
 npm install
 ```
 
-### 2. Démarrer l'infrastructure locale (PostgreSQL, Redis, MinIO)
-```bash
-npm run db:up
-```
-- **PostgreSQL 16** : `localhost:5432` (schéma initialisé automatiquement depuis [`apps/server/db/migrations/001_init_schema.sql`](apps/server/db/migrations/001_init_schema.sql))
-- **Redis 7** : `localhost:6379`
-- **MinIO S3 API / Console** : `http://localhost:9000` / `http://localhost:9001`
-
-### 3. Lancer le serveur temps réel et l'application web
+### 2. Lancer directement le serveur et l'application web (Mode Cloud-First Autonome)
 ```bash
 npm run dev
 ```
+> 💡 **Zero-Docker-Required** : Si PostgreSQL ou Redis ne sont pas lancés, `@buzz/server` bascule automatiquement sur ses adaptateurs et verrous atomiques en mémoire (`InMemory`). Pour démarrer la stack Docker complète en local : `npm run db:up`.
 - 📺 **Plateau TV (`/host`)** : `http://localhost:5173/host`
 - 📱 **Contrôleur Smartphone (`/controller`)** : `http://localhost:5173/controller?room=XXXX`
 - 🛠️ **Hub & Workshop (`/hub`)** : `http://localhost:5173/hub`

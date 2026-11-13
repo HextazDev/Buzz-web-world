@@ -14,6 +14,10 @@ Ce document définit les règles d'ingénierie, d'architecture et de collaborati
 | **`@buzz/server`** | `apps/server/` | Backend temps réel **Fastify 5 + Socket.io**, machine à états des salons (`RoomManager`), verrous atomiques Redis (`SET NX PX`), persistance **PostgreSQL 16** (`db/migrations/001_init_schema.sql`), stockage **MinIO (S3)** et pipeline IA (LLM Streaming $\rightarrow$ TTS PCM 24 kHz). |
 | **`@buzz/web`** | `apps/web/` | Frontend **Vue 3 (Vite, Pinia, Vue Router, Tailwind CSS 4)** avec 3 routes strictes : `/host` (Plateau TV 1080p/4K, Rive 2.5D, Howler.js, Lip-Sync 60 FPS), `/controller` (Buzzer mobile portrait `100dvh`, Wake Lock, Haptics, **zéro texte de question**) et `/hub` (Profil, Rivalités, Éditeur de Packs $\ge 12$ questions, Workshop). |
 
+### ☁️ Principe Directeur « Cloud-First & Zero-Docker-Required »
+* **Réseau Salon Type Jackbox (HTTPS + 4G/5G/Wi-Fi)** : L'application est pensée **Cloud-First**. L'écran TV (`/host`) et les smartphones (`/controller`) communiquent via le serveur Cloud en HTTPS/WSS (évitant les pare-feux locaux, l'AP Isolation Wi-Fi et débloquant `navigator.wakeLock` sur mobile).
+* **Autonomie Totale en Dev, Cloud VM & CI** : `npm run dev`, `npm run test` et `npm run build` doivent **toujours fonctionner à 100 % sans aucun conteneur Docker démarré**. Tout service d'infrastructure (PostgreSQL, Redis, MinIO/S3, LLM/TTS) doit posséder un **adaptateur `InMemory` / fallback déterministe par défaut** activé automatiquement lorsque ses variables d'environnement (`DATABASE_URL`, `REDIS_URL`, `S3_ENDPOINT`) sont absentes.
+
 ---
 
 ## 🥋 Rituel Obligatoire pour Résoudre une Issue
